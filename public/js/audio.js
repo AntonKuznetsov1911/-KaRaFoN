@@ -13,6 +13,13 @@ class AudioManager {
     this.destinationNode = null;
     this.effectNodes = [];
 
+    // Узлы для улучшения качества звука
+    this.highpassFilter = null;  // Убирает низкочастотный гул
+    this.lowpassFilter = null;   // Убирает высокочастотный шум
+    this.compressor = null;      // Выравнивает громкость
+    this.limiter = null;         // Предотвращает искажения
+    this.noiseGate = null;       // Убирает тихий шум
+
     this.isInitialized = false;
     this.isMicEnabled = false;
     this.isMonitoringEnabled = false;
@@ -21,6 +28,11 @@ class AudioManager {
 
     // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль
     this.bluetoothMode = true;
+
+    // Настройки качества звука
+    this.audioEnhancement = true;
+    this.noiseGateEnabled = true;
+    this.noiseGateThreshold = -50; // dB
 
     this.devices = {
       microphones: [],
@@ -35,8 +47,14 @@ class AudioManager {
     if (this.isInitialized) return true;
 
     try {
-      // Создаём Audio Context
-      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      // Создаём Audio Context с минимальной задержкой
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      this.audioContext = new AudioContextClass({
+        latencyHint: 'interactive',  // Минимальная задержка
+        sampleRate: 48000            // Высокое качество
+      });
+
+      console.log('AudioContext created, latency:', this.audioContext.baseLatency, 'sample rate:', this.audioContext.sampleRate);
 
       // Получаем список устройств
       await this.updateDeviceList();
@@ -131,27 +149,83 @@ class AudioManager {
     // Убираем предыдущую цепочку
     this.disconnectAll();
 
-    // Создаём узлы
+    // Создаём источник
     this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
-    this.gainNode = this.audioContext.createGain();
-    this.analyserNode = this.audioContext.createAnalyser();
 
-    // Настройки анализатора
+    // === УЛУЧШЕНИЕ КАЧЕСТВА ЗВУКА ===
+
+    // 1. High-pass фильтр - убирает низкочастотный гул (< 80 Hz)
+    this.highpassFilter = this.audioContext.createBiquadFilter();
+    this.highpassFilter.type = 'highpass';
+    this.highpassFilter.frequency.value = 80;
+    this.highpassFilter.Q.value = 0.7;
+
+    // 2. Low-pass фильтр - убирает высокочастотный шум (> 12000 Hz)
+    this.lowpassFilter = this.audioContext.createBiquadFilter();
+    this.lowpassFilter.type = 'lowpass';
+    this.lowpassFilter.frequency.value = 12000;
+    this.lowpassFilter.Q.value = 0.7;
+
+    // 3. Компрессор - выравнивает громкость, делает голос чётче
+    this.compressor = this.audioContext.createDynamicsCompressor();
+    this.compressor.threshold.value = -24;  // Порог срабатывания (dB)
+    this.compressor.knee.value = 12;        // Мягкость перехода
+    this.compressor.ratio.value = 4;        // Степень сжатия
+    this.compressor.attack.value = 0.003;   // Быстрая атака (3ms)
+    this.compressor.release.value = 0.15;   // Быстрый релиз (150ms)
+
+    // 4. Лимитер - предотвращает клиппинг и искажения
+    this.limiter = this.audioContext.createDynamicsCompressor();
+    this.limiter.threshold.value = -3;      // Почти на максимуме
+    this.limiter.knee.value = 0;            // Жёсткий лимит
+    this.limiter.ratio.value = 20;          // Сильное ограничение
+    this.limiter.attack.value = 0.001;      // Мгновенная атака
+    this.limiter.release.value = 0.1;       // Быстрый релиз
+
+    // 5. Gain узел для громкости
+    this.gainNode = this.audioContext.createGain();
+    this.gainNode.gain.value = this.volume;
+
+    // 6. Анализатор для визуализации
+    this.analyserNode = this.audioContext.createAnalyser();
     this.analyserNode.fftSize = 256;
     this.analyserNode.smoothingTimeConstant = 0.8;
 
-    // Устанавливаем громкость
-    this.gainNode.gain.value = this.volume;
+    // === СБОРКА ЦЕПОЧКИ ===
+    // source -> highpass -> lowpass -> compressor -> gain -> limiter -> analyser
 
-    // Базовая цепочка: source -> gain -> analyser
-    this.sourceNode.connect(this.gainNode);
-    this.gainNode.connect(this.analyserNode);
+    if (this.audioEnhancement) {
+      this.sourceNode.connect(this.highpassFilter);
+      this.highpassFilter.connect(this.lowpassFilter);
+      this.lowpassFilter.connect(this.compressor);
+      this.compressor.connect(this.gainNode);
+      this.gainNode.connect(this.limiter);
+      this.limiter.connect(this.analyserNode);
+      console.log('Audio chain with enhancement setup');
+    } else {
+      // Простая цепочка без обработки
+      this.sourceNode.connect(this.gainNode);
+      this.gainNode.connect(this.analyserNode);
+      console.log('Audio chain without enhancement setup');
+    }
 
     // Применяем эффект если выбран
     this.applyEffect(this.currentEffect);
 
     console.log('Audio chain setup complete');
     return true;
+  }
+
+  /**
+   * Включить/выключить улучшение звука
+   */
+  setAudioEnhancement(enabled) {
+    this.audioEnhancement = enabled;
+    console.log('Audio enhancement:', enabled ? 'ON' : 'OFF');
+    // Перестраиваем цепочку
+    if (this.mediaStream) {
+      this.setupAudioChain();
+    }
   }
 
   /**
@@ -495,15 +569,22 @@ class AudioManager {
    * Отключить все узлы
    */
   disconnectAll() {
-    if (this.sourceNode) {
-      try { this.sourceNode.disconnect(); } catch (e) {}
-    }
-    if (this.gainNode) {
-      try { this.gainNode.disconnect(); } catch (e) {}
-    }
-    if (this.analyserNode) {
-      try { this.analyserNode.disconnect(); } catch (e) {}
-    }
+    const nodes = [
+      this.sourceNode,
+      this.gainNode,
+      this.analyserNode,
+      this.highpassFilter,
+      this.lowpassFilter,
+      this.compressor,
+      this.limiter
+    ];
+
+    nodes.forEach(node => {
+      if (node) {
+        try { node.disconnect(); } catch (e) {}
+      }
+    });
+
     this.effectNodes.forEach(node => {
       try { node.disconnect(); } catch (e) {}
     });

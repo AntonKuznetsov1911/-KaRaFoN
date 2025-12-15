@@ -128,9 +128,22 @@
                 <input type="checkbox" id="bluetooth-mode" checked>
                 <span class="toggle-slider"></span>
               </label>
-              <span class="toggle-label">Включён (рекомендуется для колонок)</span>
+              <span class="toggle-label" id="bluetooth-label">Включён (рекомендуется для колонок)</span>
             </div>
             <p class="setting-hint">Отключает обработку звука, чтобы музыка не прерывалась при включении микрофона</p>
+          </div>
+
+          <!-- Улучшение звука -->
+          <div class="setting-group">
+            <label>🎚️ Улучшение звука</label>
+            <div class="toggle-container">
+              <label class="toggle">
+                <input type="checkbox" id="audio-enhancement" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label" id="enhancement-label">Включено</span>
+            </div>
+            <p class="setting-hint">Фильтры шума, компрессор и лимитер для чистого звука без искажений</p>
           </div>
 
           <!-- Выбор микрофона -->

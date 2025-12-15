@@ -202,9 +202,18 @@ class KaraFonApp {
     document.getElementById('bluetooth-mode').addEventListener('change', (e) => {
       const enabled = e.target.checked;
       this.audioManager?.setBluetoothMode(enabled);
-      document.querySelector('.toggle-label').textContent = enabled
+      document.getElementById('bluetooth-label').textContent = enabled
         ? 'Включён (рекомендуется для колонок)'
         : 'Выключен';
+    });
+
+    // Улучшение звука
+    document.getElementById('audio-enhancement').addEventListener('change', (e) => {
+      const enabled = e.target.checked;
+      this.audioManager?.setAudioEnhancement(enabled);
+      document.getElementById('enhancement-label').textContent = enabled
+        ? 'Включено'
+        : 'Выключено';
     });
 
     // Canvas для визуализации
