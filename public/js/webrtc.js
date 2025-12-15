@@ -288,7 +288,7 @@ class WebRTCManager {
    * Это гарантирует, что звук пойдёт на тот же выход (Bluetooth колонку),
    * что и локальный микрофон
    */
-  playRemoteStreamThroughWebAudio(peerId, stream) {
+  async playRemoteStreamThroughWebAudio(peerId, stream) {
     const peer = this.peers.get(peerId);
     if (!peer) return;
 
@@ -305,6 +305,18 @@ class WebRTCManager {
       console.error('No AudioContext available, falling back to audio element');
       this.playRemoteStreamFallback(peerId, stream);
       return;
+    }
+
+    // iOS: Resume AudioContext если suspended
+    if (audioContext.state === 'suspended') {
+      try {
+        await audioContext.resume();
+        console.log('AudioContext resumed for remote stream playback');
+      } catch (e) {
+        console.error('Failed to resume AudioContext, falling back:', e);
+        this.playRemoteStreamFallback(peerId, stream);
+        return;
+      }
     }
 
     // Отключаем старые узлы если есть

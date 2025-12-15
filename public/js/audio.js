@@ -81,16 +81,22 @@ class AudioManager {
     if (this.isInitialized) return true;
 
     try {
-      // Создаём Audio Context с МИНИМАЛЬНОЙ задержкой для реального времени
+      // Создаём Audio Context
+      // iOS/Safari требует особой обработки
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+      // Не указываем sampleRate для iOS совместимости - система выберет сама
       this.audioContext = new AudioContextClass({
-        latencyHint: 'playback',     // Минимальная задержка для воспроизведения
-        sampleRate: 48000            // Высокое качество
+        latencyHint: 'interactive'  // Лучше работает на iOS чем 'playback'
       });
 
-      // Пытаемся установить минимальный размер буфера для минимальной задержки
-      // Это критически важно для караоке
-      console.log('AudioContext created, base latency:', this.audioContext.baseLatency * 1000, 'ms, sample rate:', this.audioContext.sampleRate);
+      // iOS: AudioContext создаётся в suspended состоянии, нужно resume
+      if (this.audioContext.state === 'suspended') {
+        console.log('AudioContext suspended, will resume on user interaction');
+      }
+
+      console.log('AudioContext created, state:', this.audioContext.state,
+                  'base latency:', (this.audioContext.baseLatency || 0) * 1000, 'ms, sample rate:', this.audioContext.sampleRate);
 
       // Получаем список устройств
       await this.updateDeviceList();
@@ -142,6 +148,14 @@ class AudioManager {
    */
   async requestMicrophoneAccess(deviceId = null) {
     try {
+      // iOS: Обязательно resume AudioContext перед getUserMedia
+      // Это должно происходить после user interaction (клик на кнопку)
+      if (this.audioContext && this.audioContext.state === 'suspended') {
+        console.log('Resuming AudioContext before microphone access...');
+        await this.audioContext.resume();
+        console.log('AudioContext resumed, state:', this.audioContext.state);
+      }
+
       // В режиме Bluetooth отключаем ВСЮ обработку аудио
       // Это предотвращает переключение Bluetooth профиля с A2DP на HFP
       const constraints = {
@@ -183,6 +197,13 @@ class AudioManager {
    */
   setupAudioChain() {
     if (!this.audioContext || !this.mediaStream) return false;
+
+    // iOS: Resume AudioContext если suspended
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume().then(() => {
+        console.log('AudioContext resumed in setupAudioChain');
+      });
+    }
 
     // Убираем предыдущую цепочку
     this.disconnectAll();
