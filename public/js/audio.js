@@ -19,6 +19,9 @@ class AudioManager {
     this.currentEffect = 'none';
     this.volume = 1.0;
 
+    // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль
+    this.bluetoothMode = true;
+
     this.devices = {
       microphones: [],
       speakers: []
@@ -71,12 +74,32 @@ class AudioManager {
   }
 
   /**
+   * Установить режим Bluetooth
+   * В этом режиме отключается вся обработка аудио чтобы не переключать
+   * Bluetooth с A2DP (музыка) на HFP (гарнитура)
+   */
+  setBluetoothMode(enabled) {
+    this.bluetoothMode = enabled;
+    console.log('Bluetooth mode:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
    * Запросить доступ к микрофону
    */
   async requestMicrophoneAccess(deviceId = null) {
     try {
+      // В режиме Bluetooth отключаем ВСЮ обработку аудио
+      // Это предотвращает переключение Bluetooth профиля с A2DP на HFP
       const constraints = {
-        audio: {
+        audio: this.bluetoothMode ? {
+          // Bluetooth режим - минимальные требования
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          // Не указываем sampleRate и channelCount - пусть система выберет
+          ...(deviceId && { deviceId: { exact: deviceId } })
+        } : {
+          // Обычный режим с обработкой
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: false,
@@ -84,12 +107,14 @@ class AudioManager {
         }
       };
 
+      console.log('Requesting microphone with constraints:', constraints);
+
       this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
 
       // Обновляем список устройств после получения разрешения
       await this.updateDeviceList();
 
-      console.log('Microphone access granted');
+      console.log('Microphone access granted, Bluetooth mode:', this.bluetoothMode);
       return true;
     } catch (error) {
       console.error('Microphone access denied:', error);

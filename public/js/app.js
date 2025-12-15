@@ -198,6 +198,15 @@ class KaraFonApp {
       });
     });
 
+    // Режим Bluetooth
+    document.getElementById('bluetooth-mode').addEventListener('change', (e) => {
+      const enabled = e.target.checked;
+      this.audioManager?.setBluetoothMode(enabled);
+      document.querySelector('.toggle-label').textContent = enabled
+        ? 'Включён (рекомендуется для колонок)'
+        : 'Выключен';
+    });
+
     // Canvas для визуализации
     this.visualizerCanvas = document.getElementById('visualizer');
     this.visualizerCtx = this.visualizerCanvas.getContext('2d');
