@@ -257,6 +257,40 @@ class KaraFonApp {
       this.audioManager?.setWarmthEnabled(e.target.checked);
     });
 
+    // Anti-feedback
+    document.getElementById('anti-feedback').addEventListener('change', (e) => {
+      this.audioManager?.setAntiFeedbackEnabled(e.target.checked);
+    });
+
+    // Delay compensation (задержка для синхронизации)
+    document.getElementById('delay-compensation').addEventListener('input', (e) => {
+      const value = parseInt(e.target.value);
+      this.audioManager?.setDelay(value);
+      document.getElementById('delay-compensation-value').textContent = `${value} мс`;
+    });
+
+    // Auto-calibrate noise gate
+    document.getElementById('btn-calibrate').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-calibrate');
+      btn.classList.add('calibrating');
+      btn.textContent = 'Калибровка...';
+
+      try {
+        const threshold = await this.audioManager?.calibrateNoiseGate();
+        if (threshold !== undefined) {
+          document.getElementById('noise-gate-threshold').value = threshold;
+          document.getElementById('noise-gate-value').textContent = `${threshold} дБ`;
+          this.audioManager?.setNoiseGateThreshold(threshold);
+          this.showToast(`Порог установлен: ${threshold} дБ`);
+        }
+      } catch (e) {
+        console.error('Calibration error:', e);
+      }
+
+      btn.classList.remove('calibrating');
+      btn.textContent = 'Автокалибровка';
+    });
+
     // Canvas для визуализации
     this.visualizerCanvas = document.getElementById('visualizer');
     this.visualizerCtx = this.visualizerCanvas.getContext('2d');
@@ -393,6 +427,14 @@ class KaraFonApp {
 
     // Обновляем список устройств в настройках
     this.updateDeviceSelectors();
+
+    // Подписываемся на обновления уровня сигнала для индикатора
+    this.audioManager.onLevelChange((level, peak) => {
+      const levelFill = document.getElementById('level-fill');
+      const levelPeak = document.getElementById('level-peak');
+      if (levelFill) levelFill.style.width = `${level}%`;
+      if (levelPeak) levelPeak.style.left = `${peak}%`;
+    });
 
     return true;
   }

@@ -1,13 +1,14 @@
 /**
  * KaRaFoN WebRTC Manager
  * Управление peer-to-peer соединениями для совместного пения
+ * КРИТИЧЕСКИ: Маршрутизация через Web Audio API для правильного вывода на Bluetooth
  */
 
 class WebRTCManager {
   constructor(socket, audioManager) {
     this.socket = socket;
     this.audioManager = audioManager;
-    this.peers = new Map(); // peerId -> { connection, stream, audioElement }
+    this.peers = new Map(); // peerId -> { connection, stream, sourceNode, gainNode, audioElement }
     this.localStream = null;
     this.roomId = null;
 
@@ -100,13 +101,12 @@ class WebRTCManager {
       return false;
     }
 
-    // Проверяем и включаем все треки
+    // Проверяем и включаем все треки (важно для iOS)
     const tracks = this.localStream.getAudioTracks();
     console.log('Local stream tracks:', tracks.length);
 
     tracks.forEach(track => {
       console.log('Track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
-      // Убеждаемся что трек включен
       track.enabled = true;
     });
 
@@ -171,14 +171,15 @@ class WebRTCManager {
       }
     };
 
-    // Получение удалённого потока
+    // Получение удалённого потока - МАРШРУТИЗИРУЕМ ЧЕРЕЗ WEB AUDIO API
     connection.ontrack = (event) => {
       console.log(`Received track from ${peerId}`);
 
       const peer = this.peers.get(peerId);
       if (peer) {
         peer.stream = event.streams[0];
-        this.playRemoteStream(peerId, event.streams[0]);
+        // КРИТИЧЕСКИ: Воспроизводим через Web Audio API на тот же выход (Bluetooth колонку)
+        this.playRemoteStreamThroughWebAudio(peerId, event.streams[0]);
       }
     };
 
@@ -186,6 +187,8 @@ class WebRTCManager {
     this.peers.set(peerId, {
       connection,
       stream: null,
+      sourceNode: null,
+      gainNode: null,
       audioElement: null
     });
 
@@ -281,9 +284,71 @@ class WebRTCManager {
   }
 
   /**
-   * Воспроизвести удалённый поток
+   * КРИТИЧЕСКИ ВАЖНО: Воспроизвести удалённый поток через Web Audio API
+   * Это гарантирует, что звук пойдёт на тот же выход (Bluetooth колонку),
+   * что и локальный микрофон
    */
-  playRemoteStream(peerId, stream) {
+  playRemoteStreamThroughWebAudio(peerId, stream) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+
+    // Проверяем треки
+    const tracks = stream.getAudioTracks();
+    console.log('Remote stream tracks:', tracks.length);
+    tracks.forEach(track => {
+      console.log('Remote track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
+    });
+
+    // Получаем AudioContext из audioManager
+    const audioContext = this.audioManager.audioContext;
+    if (!audioContext) {
+      console.error('No AudioContext available, falling back to audio element');
+      this.playRemoteStreamFallback(peerId, stream);
+      return;
+    }
+
+    // Отключаем старые узлы если есть
+    if (peer.sourceNode) {
+      try { peer.sourceNode.disconnect(); } catch(e) {}
+    }
+    if (peer.gainNode) {
+      try { peer.gainNode.disconnect(); } catch(e) {}
+    }
+    // Удаляем fallback audio element если был
+    if (peer.audioElement) {
+      peer.audioElement.srcObject = null;
+      peer.audioElement.remove();
+      peer.audioElement = null;
+    }
+
+    try {
+      // Создаём source из удалённого потока
+      const sourceNode = audioContext.createMediaStreamSource(stream);
+
+      // Создаём gain для управления громкостью удалённого участника
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 1.0;
+
+      // Подключаем напрямую к выходу AudioContext
+      // Это гарантирует воспроизведение через ту же Bluetooth колонку
+      sourceNode.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      // Сохраняем узлы для управления
+      peer.sourceNode = sourceNode;
+      peer.gainNode = gainNode;
+
+      console.log(`✅ Remote stream from ${peerId} now playing through Web Audio API (same output as local mic)`);
+    } catch (error) {
+      console.error('Error setting up Web Audio for remote stream, falling back:', error);
+      this.playRemoteStreamFallback(peerId, stream);
+    }
+  }
+
+  /**
+   * Fallback: воспроизведение через audio element (для iOS совместимости)
+   */
+  playRemoteStreamFallback(peerId, stream) {
     const peer = this.peers.get(peerId);
     if (!peer) return;
 
@@ -297,34 +362,26 @@ class WebRTCManager {
     const audio = document.createElement('audio');
     audio.srcObject = stream;
     audio.autoplay = true;
-    audio.playsInline = true; // Важно для iOS
-    audio.volume = 1.0; // Максимальная громкость
+    audio.playsInline = true;
+    audio.volume = 1.0;
 
-    // Дополнительные атрибуты для совместимости с iOS
+    // Атрибуты для iOS совместимости
     audio.setAttribute('playsinline', 'true');
     audio.setAttribute('webkit-playsinline', 'true');
 
-    // Добавляем в DOM (скрытый)
+    // Скрытый элемент в DOM
     audio.style.display = 'none';
     document.body.appendChild(audio);
 
     peer.audioElement = audio;
 
-    // Проверяем треки
-    const tracks = stream.getAudioTracks();
-    console.log('Remote stream tracks:', tracks.length);
-    tracks.forEach(track => {
-      console.log('Remote track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
-    });
-
     // Пытаемся воспроизвести с повторными попытками для iOS
     const tryPlay = async () => {
       try {
         await audio.play();
-        console.log('✅ Playing remote stream from:', peerId);
+        console.log('✅ Playing remote stream (fallback) from:', peerId);
       } catch (error) {
         console.error('Error playing remote stream:', error);
-
         // Повторная попытка через 500ms (важно для iOS)
         setTimeout(async () => {
           try {
@@ -341,21 +398,45 @@ class WebRTCManager {
   }
 
   /**
+   * Установить громкость удалённого участника
+   */
+  setRemoteVolume(peerId, volume) {
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      if (peer.gainNode) {
+        peer.gainNode.gain.value = volume;
+      }
+      if (peer.audioElement) {
+        peer.audioElement.volume = volume;
+      }
+      console.log(`Remote volume for ${peerId} set to:`, volume);
+    }
+  }
+
+  /**
    * Удалить peer
    */
   removePeer(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer) return;
 
-    // Закрываем соединение
-    if (peer.connection) {
-      peer.connection.close();
+    // Отключаем Web Audio узлы
+    if (peer.sourceNode) {
+      try { peer.sourceNode.disconnect(); } catch(e) {}
+    }
+    if (peer.gainNode) {
+      try { peer.gainNode.disconnect(); } catch(e) {}
     }
 
-    // Удаляем audio элемент
+    // Удаляем audio element (fallback)
     if (peer.audioElement) {
       peer.audioElement.srcObject = null;
       peer.audioElement.remove();
+    }
+
+    // Закрываем соединение
+    if (peer.connection) {
+      peer.connection.close();
     }
 
     this.peers.delete(peerId);

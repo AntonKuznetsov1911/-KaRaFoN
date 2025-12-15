@@ -46,9 +46,27 @@ class AudioManager {
     this.warmthFilter = null;
     this.noiseGateGain = null;
 
+    // Anti-feedback
+    this.antiFeedbackEnabled = true;
+    this.antiFeedbackFilters = [];
+    this.feedbackFrequencies = [1000, 2000, 4000]; // Типичные частоты обратной связи
+
+    // Задержка для синхронизации с Bluetooth
+    this.delayNode = null;
+    this.delayTime = 0; // мс
+
+    // Stereo spread
+    this.stereoEnabled = false;
+    this.stereoSpreadNode = null;
+
     // Noise Gate состояние
     this.noiseGateOpen = false;
     this.noiseGateAnimationId = null;
+
+    // Уровень сигнала для индикатора
+    this.currentLevel = 0;
+    this.peakLevel = 0;
+    this.levelCallbacks = [];
 
     this.devices = {
       microphones: [],
@@ -63,14 +81,16 @@ class AudioManager {
     if (this.isInitialized) return true;
 
     try {
-      // Создаём Audio Context с минимальной задержкой
+      // Создаём Audio Context с МИНИМАЛЬНОЙ задержкой для реального времени
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       this.audioContext = new AudioContextClass({
-        latencyHint: 'interactive',  // Минимальная задержка
+        latencyHint: 'playback',     // Минимальная задержка для воспроизведения
         sampleRate: 48000            // Высокое качество
       });
 
-      console.log('AudioContext created, latency:', this.audioContext.baseLatency, 'sample rate:', this.audioContext.sampleRate);
+      // Пытаемся установить минимальный размер буфера для минимальной задержки
+      // Это критически важно для караоке
+      console.log('AudioContext created, base latency:', this.audioContext.baseLatency * 1000, 'ms, sample rate:', this.audioContext.sampleRate);
 
       // Получаем список устройств
       await this.updateDeviceList();
@@ -222,7 +242,25 @@ class AudioManager {
     this.gainNode = this.audioContext.createGain();
     this.gainNode.gain.value = this.volume;
 
-    // 9. Лимитер - предотвращает клиппинг и искажения
+    // 9. Anti-feedback фильтры - узкополосные notch фильтры на проблемных частотах
+    this.antiFeedbackFilters = [];
+    if (this.antiFeedbackEnabled) {
+      // Создаём notch фильтры на типичных частотах обратной связи
+      const feedbackFreqs = [800, 1600, 3200, 4000, 6300];
+      feedbackFreqs.forEach(freq => {
+        const notch = this.audioContext.createBiquadFilter();
+        notch.type = 'notch';
+        notch.frequency.value = freq;
+        notch.Q.value = 30; // Узкая полоса
+        this.antiFeedbackFilters.push(notch);
+      });
+    }
+
+    // 10. Задержка для синхронизации с Bluetooth
+    this.delayNode = this.audioContext.createDelay(1.0);
+    this.delayNode.delayTime.value = this.delayTime / 1000; // мс -> сек
+
+    // 11. Лимитер - предотвращает клиппинг и искажения
     this.limiter = this.audioContext.createDynamicsCompressor();
     this.limiter.threshold.value = -3;      // Почти на максимуме
     this.limiter.knee.value = 0;            // Жёсткий лимит
@@ -230,25 +268,57 @@ class AudioManager {
     this.limiter.attack.value = 0.001;      // Мгновенная атака
     this.limiter.release.value = 0.1;       // Быстрый релиз
 
-    // 10. Анализатор для визуализации
+    // 12. Анализатор для визуализации
     this.analyserNode = this.audioContext.createAnalyser();
     this.analyserNode.fftSize = 256;
     this.analyserNode.smoothingTimeConstant = 0.8;
 
     // === СБОРКА ЦЕПОЧКИ ===
     // source -> highpass -> lowpass -> deesser -> presence -> warmth ->
-    // compressor -> noiseGate -> gain -> limiter -> analyser
+    // antifeedback -> compressor -> noiseGate -> gain -> delay -> limiter -> analyser
 
     if (this.audioEnhancement) {
-      this.sourceNode.connect(this.highpassFilter);
-      this.highpassFilter.connect(this.lowpassFilter);
-      this.lowpassFilter.connect(this.deEsserFilter);
-      this.deEsserFilter.connect(this.presenceFilter);
-      this.presenceFilter.connect(this.warmthFilter);
-      this.warmthFilter.connect(this.compressor);
+      let currentNode = this.sourceNode;
+
+      // Базовые фильтры
+      currentNode.connect(this.highpassFilter);
+      currentNode = this.highpassFilter;
+
+      currentNode.connect(this.lowpassFilter);
+      currentNode = this.lowpassFilter;
+
+      currentNode.connect(this.deEsserFilter);
+      currentNode = this.deEsserFilter;
+
+      currentNode.connect(this.presenceFilter);
+      currentNode = this.presenceFilter;
+
+      currentNode.connect(this.warmthFilter);
+      currentNode = this.warmthFilter;
+
+      // Anti-feedback фильтры (цепочка notch фильтров)
+      if (this.antiFeedbackEnabled && this.antiFeedbackFilters.length > 0) {
+        this.antiFeedbackFilters.forEach(filter => {
+          currentNode.connect(filter);
+          currentNode = filter;
+        });
+      }
+
+      // Компрессор -> Noise Gate -> Gain -> Limiter -> Analyser
+      // КРИТИЧЕСКИ: Убрали delay из цепочки для минимальной задержки!
+      // Delay используется только если пользователь явно установил компенсацию
+      currentNode.connect(this.compressor);
       this.compressor.connect(this.noiseGateGain);
       this.noiseGateGain.connect(this.gainNode);
-      this.gainNode.connect(this.limiter);
+
+      // Если установлена компенсация задержки > 0, используем delay
+      if (this.delayTime > 0) {
+        this.gainNode.connect(this.delayNode);
+        this.delayNode.connect(this.limiter);
+      } else {
+        // Без delay - минимальная задержка
+        this.gainNode.connect(this.limiter);
+      }
       this.limiter.connect(this.analyserNode);
 
       // Запускаем Noise Gate если включен
@@ -256,12 +326,24 @@ class AudioManager {
         this.startNoiseGate();
       }
 
+      // Запускаем мониторинг уровня
+      this.startLevelMeter();
+
       console.log('Audio chain with full enhancement setup');
     } else {
-      // Простая цепочка без обработки
+      // Простая цепочка без обработки - МИНИМАЛЬНАЯ ЗАДЕРЖКА
       this.sourceNode.connect(this.gainNode);
-      this.gainNode.connect(this.analyserNode);
-      console.log('Audio chain without enhancement setup');
+
+      // Delay только если явно установлен > 0
+      if (this.delayTime > 0) {
+        this.gainNode.connect(this.delayNode);
+        this.delayNode.connect(this.analyserNode);
+      } else {
+        this.gainNode.connect(this.analyserNode);
+      }
+
+      this.startLevelMeter();
+      console.log('Audio chain without enhancement setup (zero latency)');
     }
 
     // Применяем вокальный пресет
@@ -272,6 +354,161 @@ class AudioManager {
 
     console.log('Audio chain setup complete');
     return true;
+  }
+
+  /**
+   * Индикатор уровня сигнала
+   */
+  startLevelMeter() {
+    if (this.levelMeterAnimationId) return;
+
+    const analyser = this.audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    this.sourceNode.connect(analyser);
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Float32Array(bufferLength);
+
+    const updateLevel = () => {
+      analyser.getFloatTimeDomainData(dataArray);
+
+      // Вычисляем RMS
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i] * dataArray[i];
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+
+      // Конвертируем в проценты (0-100)
+      // -60 dB = 0%, 0 dB = 100%
+      const db = 20 * Math.log10(rms + 0.0001);
+      this.currentLevel = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+
+      // Peak hold
+      if (this.currentLevel > this.peakLevel) {
+        this.peakLevel = this.currentLevel;
+      } else {
+        this.peakLevel *= 0.95; // Медленный спад
+      }
+
+      // Вызываем callbacks
+      this.levelCallbacks.forEach(cb => cb(this.currentLevel, this.peakLevel));
+
+      this.levelMeterAnimationId = requestAnimationFrame(updateLevel);
+    };
+
+    updateLevel();
+  }
+
+  stopLevelMeter() {
+    if (this.levelMeterAnimationId) {
+      cancelAnimationFrame(this.levelMeterAnimationId);
+      this.levelMeterAnimationId = null;
+    }
+  }
+
+  /**
+   * Подписаться на обновления уровня сигнала
+   */
+  onLevelChange(callback) {
+    this.levelCallbacks.push(callback);
+    return () => {
+      const index = this.levelCallbacks.indexOf(callback);
+      if (index > -1) this.levelCallbacks.splice(index, 1);
+    };
+  }
+
+  /**
+   * Получить текущий уровень
+   */
+  getLevel() {
+    return { current: this.currentLevel, peak: this.peakLevel };
+  }
+
+  /**
+   * Автокалибровка Noise Gate - определяет уровень фонового шума
+   */
+  async calibrateNoiseGate() {
+    return new Promise((resolve) => {
+      if (!this.audioContext || !this.sourceNode) {
+        resolve(-45);
+        return;
+      }
+
+      const analyser = this.audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      this.sourceNode.connect(analyser);
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Float32Array(bufferLength);
+
+      let samples = [];
+      let sampleCount = 0;
+      const maxSamples = 30; // ~0.5 секунды
+
+      const collectSamples = () => {
+        analyser.getFloatTimeDomainData(dataArray);
+
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i] * dataArray[i];
+        }
+        const rms = Math.sqrt(sum / bufferLength);
+        const db = 20 * Math.log10(rms + 0.0001);
+        samples.push(db);
+
+        sampleCount++;
+        if (sampleCount < maxSamples) {
+          requestAnimationFrame(collectSamples);
+        } else {
+          // Вычисляем средний уровень шума + запас 6 dB
+          const avgNoise = samples.reduce((a, b) => a + b) / samples.length;
+          const threshold = Math.round(avgNoise + 6);
+
+          // Ограничиваем диапазон
+          const finalThreshold = Math.max(-60, Math.min(-20, threshold));
+
+          console.log('Noise Gate calibrated:', finalThreshold, 'dB (noise floor:', avgNoise.toFixed(1), 'dB)');
+          resolve(finalThreshold);
+        }
+      };
+
+      collectSamples();
+    });
+  }
+
+  /**
+   * Установить задержку (для синхронизации с Bluetooth)
+   * ВНИМАНИЕ: По умолчанию должно быть 0 для минимальной задержки
+   */
+  setDelay(ms) {
+    const oldDelay = this.delayTime;
+    this.delayTime = ms;
+
+    if (this.delayNode) {
+      this.delayNode.delayTime.setValueAtTime(ms / 1000, this.audioContext.currentTime);
+    }
+
+    // Если delay изменился с 0 на >0 или наоборот, перестраиваем цепочку
+    const needsRebuild = (oldDelay === 0 && ms > 0) || (oldDelay > 0 && ms === 0);
+    if (needsRebuild && this.mediaStream) {
+      console.log('Rebuilding audio chain for delay change');
+      this.setupAudioChain();
+    }
+
+    console.log('Delay set to:', ms, 'ms', needsRebuild ? '(chain rebuilt)' : '');
+  }
+
+  /**
+   * Включить/выключить Anti-feedback
+   */
+  setAntiFeedbackEnabled(enabled) {
+    this.antiFeedbackEnabled = enabled;
+    // Перестраиваем цепочку
+    if (this.mediaStream) {
+      this.setupAudioChain();
+    }
+    console.log('Anti-feedback:', enabled ? 'ON' : 'OFF');
   }
 
   /**
@@ -799,6 +1036,9 @@ class AudioManager {
    * Отключить все узлы
    */
   disconnectAll() {
+    // Останавливаем мониторинг уровня
+    this.stopLevelMeter();
+
     const nodes = [
       this.sourceNode,
       this.gainNode,
@@ -811,7 +1051,9 @@ class AudioManager {
       this.presenceFilter,
       this.warmthFilter,
       this.noiseGateGain,
-      this.monitorGainNode
+      this.monitorGainNode,
+      this.delayNode,
+      ...this.antiFeedbackFilters
     ];
 
     nodes.forEach(node => {
@@ -823,6 +1065,8 @@ class AudioManager {
     this.effectNodes.forEach(node => {
       try { node.disconnect(); } catch (e) {}
     });
+
+    this.antiFeedbackFilters = [];
   }
 
   /**
