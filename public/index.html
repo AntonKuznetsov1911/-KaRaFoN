@@ -146,6 +146,73 @@
             <p class="setting-hint">Фильтры шума, компрессор и лимитер для чистого звука без искажений</p>
           </div>
 
+          <!-- Вокальный пресет -->
+          <div class="setting-group">
+            <label>🎙️ Тип голоса</label>
+            <div class="preset-buttons">
+              <button class="preset-btn active" data-preset="natural">Натуральный</button>
+              <button class="preset-btn" data-preset="bright">Яркий</button>
+              <button class="preset-btn" data-preset="warm">Тёплый</button>
+              <button class="preset-btn" data-preset="radio">Радио</button>
+              <button class="preset-btn" data-preset="powerful">Мощный</button>
+            </div>
+          </div>
+
+          <!-- Noise Gate -->
+          <div class="setting-group">
+            <label>🔇 Noise Gate</label>
+            <div class="toggle-container">
+              <label class="toggle">
+                <input type="checkbox" id="noise-gate" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label" id="noise-gate-label">Включён</span>
+            </div>
+            <p class="setting-hint">Глушит микрофон когда не поёшь (убирает фоновый шум)</p>
+            <div class="slider-group">
+              <label>Чувствительность</label>
+              <input type="range" id="noise-gate-threshold" min="-60" max="-20" value="-45">
+              <span id="noise-gate-value">-45 дБ</span>
+            </div>
+          </div>
+
+          <!-- Дополнительные фильтры -->
+          <div class="setting-group">
+            <label>✨ Улучшения голоса</label>
+            <div class="enhancements-list">
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="de-esser" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">De-esser</span>
+                  <span class="enhancement-desc">Убирает резкие "с", "ш"</span>
+                </div>
+              </div>
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="presence" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">Чёткость</span>
+                  <span class="enhancement-desc">Делает голос разборчивее</span>
+                </div>
+              </div>
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="warmth">
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">Теплота</span>
+                  <span class="enhancement-desc">Добавляет басовитость</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Выбор микрофона -->
           <div class="setting-group">
             <label>🎙️ Микрофон</label>

@@ -693,6 +693,123 @@ body {
   line-height: 1.4;
 }
 
+/* Small toggle */
+.toggle.small {
+  width: 40px;
+  height: 22px;
+}
+
+.toggle.small .toggle-slider:before {
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+}
+
+.toggle.small input:checked + .toggle-slider:before {
+  transform: translateX(18px);
+}
+
+/* Preset Buttons */
+.preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preset-btn {
+  flex: 1;
+  min-width: calc(33% - 8px);
+  padding: 10px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--card-bg);
+  color: var(--tg-theme-text-color);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.preset-btn.active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: white;
+}
+
+/* Slider Group */
+.slider-group {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--card-bg);
+  border-radius: 10px;
+}
+
+.slider-group label {
+  font-size: 12px;
+  font-weight: normal;
+  color: var(--tg-theme-hint-color);
+  margin-bottom: 8px;
+}
+
+.slider-group input[type="range"] {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--dark);
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 8px 0;
+}
+
+.slider-group input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+}
+
+.slider-group span {
+  display: block;
+  text-align: center;
+  font-size: 12px;
+  color: var(--tg-theme-hint-color);
+}
+
+/* Enhancements List */
+.enhancements-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.enhancement-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--card-bg);
+  border-radius: 10px;
+}
+
+.enhancement-info {
+  flex: 1;
+}
+
+.enhancement-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.enhancement-desc {
+  font-size: 12px;
+  color: var(--tg-theme-hint-color);
+}
+
 /* Toast notifications */
 .toast {
   position: fixed;

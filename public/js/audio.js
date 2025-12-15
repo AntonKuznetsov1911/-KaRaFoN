@@ -32,7 +32,23 @@ class AudioManager {
     // Настройки качества звука
     this.audioEnhancement = true;
     this.noiseGateEnabled = true;
-    this.noiseGateThreshold = -50; // dB
+    this.noiseGateThreshold = -45; // dB
+    this.deEsserEnabled = true;
+    this.presenceEnabled = true;
+    this.warmthEnabled = false;
+
+    // Вокальные пресеты
+    this.vocalPreset = 'natural'; // natural, bright, warm, radio, telephone
+
+    // Дополнительные узлы
+    this.deEsserFilter = null;
+    this.presenceFilter = null;
+    this.warmthFilter = null;
+    this.noiseGateGain = null;
+
+    // Noise Gate состояние
+    this.noiseGateOpen = false;
+    this.noiseGateAnimationId = null;
 
     this.devices = {
       microphones: [],
@@ -148,6 +164,7 @@ class AudioManager {
 
     // Убираем предыдущую цепочку
     this.disconnectAll();
+    this.stopNoiseGate();
 
     // Создаём источник
     this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
@@ -166,7 +183,28 @@ class AudioManager {
     this.lowpassFilter.frequency.value = 12000;
     this.lowpassFilter.Q.value = 0.7;
 
-    // 3. Компрессор - выравнивает громкость, делает голос чётче
+    // 3. De-esser - убирает резкие "с", "ш" звуки (4-8 kHz)
+    this.deEsserFilter = this.audioContext.createBiquadFilter();
+    this.deEsserFilter.type = 'peaking';
+    this.deEsserFilter.frequency.value = 6000;
+    this.deEsserFilter.Q.value = 2;
+    this.deEsserFilter.gain.value = this.deEsserEnabled ? -6 : 0;
+
+    // 4. Presence - добавляет чёткость голосу (2-4 kHz)
+    this.presenceFilter = this.audioContext.createBiquadFilter();
+    this.presenceFilter.type = 'peaking';
+    this.presenceFilter.frequency.value = 3000;
+    this.presenceFilter.Q.value = 1;
+    this.presenceFilter.gain.value = this.presenceEnabled ? 3 : 0;
+
+    // 5. Warmth - добавляет теплоту (200-400 Hz)
+    this.warmthFilter = this.audioContext.createBiquadFilter();
+    this.warmthFilter.type = 'peaking';
+    this.warmthFilter.frequency.value = 250;
+    this.warmthFilter.Q.value = 1;
+    this.warmthFilter.gain.value = this.warmthEnabled ? 4 : 0;
+
+    // 6. Компрессор - выравнивает громкость, делает голос чётче
     this.compressor = this.audioContext.createDynamicsCompressor();
     this.compressor.threshold.value = -24;  // Порог срабатывания (dB)
     this.compressor.knee.value = 12;        // Мягкость перехода
@@ -174,7 +212,15 @@ class AudioManager {
     this.compressor.attack.value = 0.003;   // Быстрая атака (3ms)
     this.compressor.release.value = 0.15;   // Быстрый релиз (150ms)
 
-    // 4. Лимитер - предотвращает клиппинг и искажения
+    // 7. Noise Gate Gain - для программного noise gate
+    this.noiseGateGain = this.audioContext.createGain();
+    this.noiseGateGain.gain.value = 1;
+
+    // 8. Gain узел для громкости
+    this.gainNode = this.audioContext.createGain();
+    this.gainNode.gain.value = this.volume;
+
+    // 9. Лимитер - предотвращает клиппинг и искажения
     this.limiter = this.audioContext.createDynamicsCompressor();
     this.limiter.threshold.value = -3;      // Почти на максимуме
     this.limiter.knee.value = 0;            // Жёсткий лимит
@@ -182,26 +228,33 @@ class AudioManager {
     this.limiter.attack.value = 0.001;      // Мгновенная атака
     this.limiter.release.value = 0.1;       // Быстрый релиз
 
-    // 5. Gain узел для громкости
-    this.gainNode = this.audioContext.createGain();
-    this.gainNode.gain.value = this.volume;
-
-    // 6. Анализатор для визуализации
+    // 10. Анализатор для визуализации
     this.analyserNode = this.audioContext.createAnalyser();
     this.analyserNode.fftSize = 256;
     this.analyserNode.smoothingTimeConstant = 0.8;
 
     // === СБОРКА ЦЕПОЧКИ ===
-    // source -> highpass -> lowpass -> compressor -> gain -> limiter -> analyser
+    // source -> highpass -> lowpass -> deesser -> presence -> warmth ->
+    // compressor -> noiseGate -> gain -> limiter -> analyser
 
     if (this.audioEnhancement) {
       this.sourceNode.connect(this.highpassFilter);
       this.highpassFilter.connect(this.lowpassFilter);
-      this.lowpassFilter.connect(this.compressor);
-      this.compressor.connect(this.gainNode);
+      this.lowpassFilter.connect(this.deEsserFilter);
+      this.deEsserFilter.connect(this.presenceFilter);
+      this.presenceFilter.connect(this.warmthFilter);
+      this.warmthFilter.connect(this.compressor);
+      this.compressor.connect(this.noiseGateGain);
+      this.noiseGateGain.connect(this.gainNode);
       this.gainNode.connect(this.limiter);
       this.limiter.connect(this.analyserNode);
-      console.log('Audio chain with enhancement setup');
+
+      // Запускаем Noise Gate если включен
+      if (this.noiseGateEnabled) {
+        this.startNoiseGate();
+      }
+
+      console.log('Audio chain with full enhancement setup');
     } else {
       // Простая цепочка без обработки
       this.sourceNode.connect(this.gainNode);
@@ -209,11 +262,175 @@ class AudioManager {
       console.log('Audio chain without enhancement setup');
     }
 
+    // Применяем вокальный пресет
+    this.applyVocalPreset(this.vocalPreset);
+
     // Применяем эффект если выбран
     this.applyEffect(this.currentEffect);
 
     console.log('Audio chain setup complete');
     return true;
+  }
+
+  /**
+   * Noise Gate - глушит микрофон когда не поёшь
+   */
+  startNoiseGate() {
+    if (this.noiseGateAnimationId) return;
+
+    const analyser = this.audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    this.sourceNode.connect(analyser);
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Float32Array(bufferLength);
+
+    const checkLevel = () => {
+      analyser.getFloatTimeDomainData(dataArray);
+
+      // Вычисляем RMS (громкость)
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i] * dataArray[i];
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+      const db = 20 * Math.log10(rms + 0.0001);
+
+      // Открываем/закрываем gate
+      const targetGain = db > this.noiseGateThreshold ? 1 : 0;
+
+      // Плавное изменение (10ms attack, 100ms release)
+      const currentTime = this.audioContext.currentTime;
+      if (targetGain > this.noiseGateGain.gain.value) {
+        // Attack - быстро открываем
+        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.01);
+      } else {
+        // Release - плавно закрываем
+        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.1);
+      }
+
+      this.noiseGateOpen = targetGain > 0.5;
+      this.noiseGateAnimationId = requestAnimationFrame(checkLevel);
+    };
+
+    checkLevel();
+    console.log('Noise Gate started, threshold:', this.noiseGateThreshold, 'dB');
+  }
+
+  stopNoiseGate() {
+    if (this.noiseGateAnimationId) {
+      cancelAnimationFrame(this.noiseGateAnimationId);
+      this.noiseGateAnimationId = null;
+    }
+  }
+
+  /**
+   * Установить порог Noise Gate
+   */
+  setNoiseGateThreshold(threshold) {
+    this.noiseGateThreshold = threshold;
+    console.log('Noise Gate threshold:', threshold, 'dB');
+  }
+
+  /**
+   * Включить/выключить Noise Gate
+   */
+  setNoiseGateEnabled(enabled) {
+    this.noiseGateEnabled = enabled;
+    if (enabled && this.audioEnhancement && this.mediaStream) {
+      this.startNoiseGate();
+    } else {
+      this.stopNoiseGate();
+      if (this.noiseGateGain) {
+        this.noiseGateGain.gain.value = 1;
+      }
+    }
+    console.log('Noise Gate:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Включить/выключить De-esser
+   */
+  setDeEsserEnabled(enabled) {
+    this.deEsserEnabled = enabled;
+    if (this.deEsserFilter) {
+      this.deEsserFilter.gain.value = enabled ? -6 : 0;
+    }
+    console.log('De-esser:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Включить/выключить Presence
+   */
+  setPresenceEnabled(enabled) {
+    this.presenceEnabled = enabled;
+    if (this.presenceFilter) {
+      this.presenceFilter.gain.value = enabled ? 3 : 0;
+    }
+    console.log('Presence:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Включить/выключить Warmth
+   */
+  setWarmthEnabled(enabled) {
+    this.warmthEnabled = enabled;
+    if (this.warmthFilter) {
+      this.warmthFilter.gain.value = enabled ? 4 : 0;
+    }
+    console.log('Warmth:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Применить вокальный пресет
+   */
+  applyVocalPreset(preset) {
+    this.vocalPreset = preset;
+
+    if (!this.audioEnhancement) return;
+
+    // Сбрасываем все настройки
+    const presets = {
+      natural: {
+        highpass: 80, lowpass: 12000,
+        deesser: -4, presence: 2, warmth: 0,
+        compThreshold: -24, compRatio: 3
+      },
+      bright: {
+        highpass: 100, lowpass: 14000,
+        deesser: -3, presence: 5, warmth: -2,
+        compThreshold: -20, compRatio: 4
+      },
+      warm: {
+        highpass: 60, lowpass: 10000,
+        deesser: -6, presence: 0, warmth: 5,
+        compThreshold: -26, compRatio: 3
+      },
+      radio: {
+        highpass: 120, lowpass: 8000,
+        deesser: -8, presence: 6, warmth: 2,
+        compThreshold: -18, compRatio: 6
+      },
+      powerful: {
+        highpass: 80, lowpass: 12000,
+        deesser: -4, presence: 4, warmth: 3,
+        compThreshold: -20, compRatio: 5
+      }
+    };
+
+    const p = presets[preset] || presets.natural;
+
+    if (this.highpassFilter) this.highpassFilter.frequency.value = p.highpass;
+    if (this.lowpassFilter) this.lowpassFilter.frequency.value = p.lowpass;
+    if (this.deEsserFilter) this.deEsserFilter.gain.value = this.deEsserEnabled ? p.deesser : 0;
+    if (this.presenceFilter) this.presenceFilter.gain.value = this.presenceEnabled ? p.presence : 0;
+    if (this.warmthFilter) this.warmthFilter.gain.value = this.warmthEnabled ? p.warmth : 0;
+    if (this.compressor) {
+      this.compressor.threshold.value = p.compThreshold;
+      this.compressor.ratio.value = p.compRatio;
+    }
+
+    console.log('Vocal preset applied:', preset);
   }
 
   /**
@@ -576,7 +793,11 @@ class AudioManager {
       this.highpassFilter,
       this.lowpassFilter,
       this.compressor,
-      this.limiter
+      this.limiter,
+      this.deEsserFilter,
+      this.presenceFilter,
+      this.warmthFilter,
+      this.noiseGateGain
     ];
 
     nodes.forEach(node => {

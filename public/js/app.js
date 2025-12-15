@@ -216,6 +216,46 @@ class KaraFonApp {
         : 'Выключено';
     });
 
+    // Вокальные пресеты
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const preset = e.currentTarget.dataset.preset;
+        document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        this.audioManager?.applyVocalPreset(preset);
+      });
+    });
+
+    // Noise Gate
+    document.getElementById('noise-gate').addEventListener('change', (e) => {
+      const enabled = e.target.checked;
+      this.audioManager?.setNoiseGateEnabled(enabled);
+      document.getElementById('noise-gate-label').textContent = enabled
+        ? 'Включён'
+        : 'Выключен';
+    });
+
+    document.getElementById('noise-gate-threshold').addEventListener('input', (e) => {
+      const value = parseInt(e.target.value);
+      this.audioManager?.setNoiseGateThreshold(value);
+      document.getElementById('noise-gate-value').textContent = `${value} дБ`;
+    });
+
+    // De-esser
+    document.getElementById('de-esser').addEventListener('change', (e) => {
+      this.audioManager?.setDeEsserEnabled(e.target.checked);
+    });
+
+    // Presence (чёткость)
+    document.getElementById('presence').addEventListener('change', (e) => {
+      this.audioManager?.setPresenceEnabled(e.target.checked);
+    });
+
+    // Warmth (теплота)
+    document.getElementById('warmth').addEventListener('change', (e) => {
+      this.audioManager?.setWarmthEnabled(e.target.checked);
+    });
+
     // Canvas для визуализации
     this.visualizerCanvas = document.getElementById('visualizer');
     this.visualizerCtx = this.visualizerCanvas.getContext('2d');
