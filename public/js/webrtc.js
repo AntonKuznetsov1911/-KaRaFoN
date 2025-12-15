@@ -100,6 +100,16 @@ class WebRTCManager {
       return false;
     }
 
+    // Проверяем и включаем все треки
+    const tracks = this.localStream.getAudioTracks();
+    console.log('Local stream tracks:', tracks.length);
+
+    tracks.forEach(track => {
+      console.log('Track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
+      // Убеждаемся что трек включен
+      track.enabled = true;
+    });
+
     // Отправляем запрос на присоединение
     this.socket.emit('join-room', { roomId, name: userName });
 
@@ -130,9 +140,16 @@ class WebRTCManager {
 
     // Добавляем локальный поток
     if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
-        connection.addTrack(track, this.localStream);
+      const tracks = this.localStream.getTracks();
+      console.log(`Adding ${tracks.length} tracks to peer connection`);
+
+      tracks.forEach(track => {
+        console.log(`Adding track: ${track.kind}, label: ${track.label}, enabled: ${track.enabled}, muted: ${track.muted}`);
+        const sender = connection.addTrack(track, this.localStream);
+        console.log('Track added, sender:', sender);
       });
+    } else {
+      console.error('⚠️ No local stream available for peer connection!');
     }
 
     // Обработка ICE candidates
@@ -272,6 +289,7 @@ class WebRTCManager {
 
     // Удаляем старый audio элемент если есть
     if (peer.audioElement) {
+      peer.audioElement.srcObject = null;
       peer.audioElement.remove();
     }
 
@@ -279,7 +297,12 @@ class WebRTCManager {
     const audio = document.createElement('audio');
     audio.srcObject = stream;
     audio.autoplay = true;
-    audio.playsInline = true;
+    audio.playsInline = true; // Важно для iOS
+    audio.volume = 1.0; // Максимальная громкость
+
+    // Дополнительные атрибуты для совместимости с iOS
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('webkit-playsinline', 'true');
 
     // Добавляем в DOM (скрытый)
     audio.style.display = 'none';
@@ -287,12 +310,34 @@ class WebRTCManager {
 
     peer.audioElement = audio;
 
-    // Пытаемся воспроизвести
-    audio.play().catch(error => {
-      console.error('Error playing remote stream:', error);
+    // Проверяем треки
+    const tracks = stream.getAudioTracks();
+    console.log('Remote stream tracks:', tracks.length);
+    tracks.forEach(track => {
+      console.log('Remote track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
     });
 
-    console.log('Playing remote stream from:', peerId);
+    // Пытаемся воспроизвести с повторными попытками для iOS
+    const tryPlay = async () => {
+      try {
+        await audio.play();
+        console.log('✅ Playing remote stream from:', peerId);
+      } catch (error) {
+        console.error('Error playing remote stream:', error);
+
+        // Повторная попытка через 500ms (важно для iOS)
+        setTimeout(async () => {
+          try {
+            await audio.play();
+            console.log('✅ Playing remote stream (retry) from:', peerId);
+          } catch (retryError) {
+            console.error('Failed to play after retry:', retryError);
+          }
+        }, 500);
+      }
+    };
+
+    tryPlay();
   }
 
   /**

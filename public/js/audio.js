@@ -133,10 +133,12 @@ class AudioManager {
           // Не указываем sampleRate и channelCount - пусть система выберет
           ...(deviceId && { deviceId: { exact: deviceId } })
         } : {
-          // Обычный режим с обработкой
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
+          // Обычный режим с АГРЕССИВНОЙ обработкой для подавления помех
+          echoCancellation: { ideal: true, exact: true },
+          noiseSuppression: { ideal: true, exact: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 48000 },
+          channelCount: { ideal: 1 }, // Моно для меньших помех
           ...(deviceId && { deviceId: { exact: deviceId } })
         }
       };
@@ -825,15 +827,25 @@ class AudioManager {
 
   /**
    * Получить поток для WebRTC
+   * ВАЖНО: Возвращаем оригинальный mediaStream для лучшей совместимости с iPhone/Safari
    */
   getOutputStream() {
-    if (!this.audioContext || !this.analyserNode) return null;
+    // Возвращаем оригинальный поток с микрофона
+    // Это работает лучше для WebRTC, особенно на iOS
+    if (this.mediaStream) {
+      console.log('Returning original mediaStream for WebRTC');
+      return this.mediaStream;
+    }
 
-    // Создаём destination для WebRTC
-    const destination = this.audioContext.createMediaStreamDestination();
-    this.analyserNode.connect(destination);
+    // Fallback: если нужен обработанный поток (не рекомендуется для WebRTC)
+    if (this.audioContext && this.analyserNode) {
+      console.warn('Using processed stream for WebRTC - may cause issues on iOS');
+      const destination = this.audioContext.createMediaStreamDestination();
+      this.analyserNode.connect(destination);
+      return destination.stream;
+    }
 
-    return destination.stream;
+    return null;
   }
 
   /**
