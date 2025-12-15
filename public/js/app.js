@@ -20,6 +20,7 @@ class KaraFonApp {
     this.userName = 'Anonymous';
     this.isMicActive = false;
     this.isMonitoring = false;
+    this.monitoringWarningShown = false;
     this.currentEffect = 'none';
 
     // Visualizer
@@ -457,6 +458,23 @@ class KaraFonApp {
    * Переключить мониторинг
    */
   toggleMonitoring() {
+    // При первом включении мониторинга показываем предупреждение
+    if (!this.isMonitoring && !this.monitoringWarningShown) {
+      const confirmed = confirm(
+        '⚠️ ВНИМАНИЕ: Мониторинг может вызвать feedback (свист)!\n\n' +
+        '✅ ИСПОЛЬЗУЙТЕ НАУШНИКИ\n' +
+        '✅ Держите микрофон подальше от динамиков\n' +
+        '✅ Уменьшите громкость если слышите писк\n\n' +
+        'Продолжить?'
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      this.monitoringWarningShown = true;
+    }
+
     this.isMonitoring = !this.isMonitoring;
 
     this.audioManager.enableMonitoring(this.isMonitoring);
@@ -464,6 +482,7 @@ class KaraFonApp {
     const monitorBtn = document.getElementById('btn-monitor');
     if (this.isMonitoring) {
       monitorBtn.classList.add('active');
+      this.showToast('⚠️ Мониторинг включен - используйте наушники!');
     } else {
       monitorBtn.classList.remove('active');
     }

@@ -24,7 +24,7 @@ class AudioManager {
     this.isMicEnabled = false;
     this.isMonitoringEnabled = false;
     this.currentEffect = 'none';
-    this.volume = 1.0;
+    this.volume = 0.5; // Снижена с 1.0 для предотвращения feedback
 
     // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль
     this.bluetoothMode = true;
@@ -446,7 +446,8 @@ class AudioManager {
   }
 
   /**
-   * Включить мониторинг (воспроизведение микрофона через динамики)
+   * Включить/выключить мониторинг
+   * ВНИМАНИЕ: Может вызвать feedback! Используйте наушники
    */
   enableMonitoring(enabled) {
     if (!this.audioContext || !this.analyserNode) return;
@@ -454,11 +455,21 @@ class AudioManager {
     this.isMonitoringEnabled = enabled;
 
     if (enabled) {
-      this.analyserNode.connect(this.audioContext.destination);
-      console.log('Monitoring enabled');
+      // Создаём gain для мониторинга с пониженной громкостью (30%)
+      if (!this.monitorGainNode) {
+        this.monitorGainNode = this.audioContext.createGain();
+        this.monitorGainNode.gain.value = 0.3; // Сильно снижаем для предотвращения feedback
+      }
+
+      this.analyserNode.connect(this.monitorGainNode);
+      this.monitorGainNode.connect(this.audioContext.destination);
+      console.log('⚠️ Monitoring enabled - используйте наушники!');
     } else {
       try {
-        this.analyserNode.disconnect(this.audioContext.destination);
+        if (this.monitorGainNode) {
+          this.analyserNode.disconnect(this.monitorGainNode);
+          this.monitorGainNode.disconnect(this.audioContext.destination);
+        }
       } catch (e) {
         // Может быть не подключен
       }
@@ -797,7 +808,8 @@ class AudioManager {
       this.deEsserFilter,
       this.presenceFilter,
       this.warmthFilter,
-      this.noiseGateGain
+      this.noiseGateGain,
+      this.monitorGainNode
     ];
 
     nodes.forEach(node => {
