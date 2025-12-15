@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>KaRaFoN</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Экран загрузки -->
+    <div id="loading-screen" class="screen active">
+      <div class="loader">
+        <div class="mic-icon">🎤</div>
+        <h1>KaRaFoN</h1>
+        <p>Загрузка...</p>
+      </div>
+    </div>
+
+    <!-- Главный экран -->
+    <div id="main-screen" class="screen">
+      <header>
+        <h1>🎤 KaRaFoN</h1>
+        <p class="subtitle">Караоке с друзьями</p>
+      </header>
+
+      <div class="main-content">
+        <!-- Одиночный режим -->
+        <div class="card" id="solo-card">
+          <div class="card-icon">🎙️</div>
+          <h2>Соло режим</h2>
+          <p>Пой один под любую музыку</p>
+          <button class="btn btn-primary" id="btn-solo">Начать петь</button>
+        </div>
+
+        <!-- Создать комнату -->
+        <div class="card" id="create-card">
+          <div class="card-icon">🎉</div>
+          <h2>Создать комнату</h2>
+          <p>Пригласи друзей петь вместе</p>
+          <button class="btn btn-secondary" id="btn-create-room">Создать</button>
+        </div>
+
+        <!-- Присоединиться -->
+        <div class="card" id="join-card">
+          <div class="card-icon">👥</div>
+          <h2>Присоединиться</h2>
+          <p>Войди в комнату друга</p>
+          <div class="input-group">
+            <input type="text" id="room-code-input" placeholder="Код комнаты" maxlength="8">
+            <button class="btn btn-secondary" id="btn-join-room">Войти</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Экран караоке -->
+    <div id="karaoke-screen" class="screen">
+      <header class="karaoke-header">
+        <button class="btn-back" id="btn-back">←</button>
+        <div class="room-info">
+          <span id="room-label">Соло режим</span>
+          <span id="room-id-display" class="room-code"></span>
+        </div>
+        <button class="btn-settings" id="btn-settings">⚙️</button>
+      </header>
+
+      <!-- Визуализация -->
+      <div class="visualizer-container">
+        <canvas id="visualizer"></canvas>
+        <div class="mic-status" id="mic-status">
+          <div class="mic-icon-large" id="mic-icon">🎤</div>
+          <p id="mic-status-text">Нажми чтобы начать</p>
+        </div>
+      </div>
+
+      <!-- Участники комнаты -->
+      <div id="participants-panel" class="participants-panel hidden">
+        <h3>Участники <span id="participants-count">0</span></h3>
+        <div id="participants-list" class="participants-list"></div>
+        <div class="share-room">
+          <p>Код комнаты:</p>
+          <div class="code-display">
+            <span id="share-room-code">------</span>
+            <button class="btn-copy" id="btn-copy-code">📋</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Контролы -->
+      <div class="controls">
+        <button class="control-btn" id="btn-mic-toggle">
+          <span class="icon">🎙️</span>
+          <span class="label">Микрофон</span>
+        </button>
+        <button class="control-btn" id="btn-monitor">
+          <span class="icon">🔊</span>
+          <span class="label">Мониторинг</span>
+        </button>
+        <button class="control-btn" id="btn-effects">
+          <span class="icon">✨</span>
+          <span class="label">Эффекты</span>
+        </button>
+      </div>
+
+      <!-- Слайдер громкости -->
+      <div class="volume-control">
+        <label>🔈 Громкость микрофона</label>
+        <input type="range" id="volume-slider" min="0" max="200" value="100">
+        <span id="volume-value">100%</span>
+      </div>
+    </div>
+
+    <!-- Модальное окно настроек -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>⚙️ Настройки</h2>
+          <button class="btn-close" id="btn-close-settings">×</button>
+        </div>
+        <div class="modal-body">
+          <!-- Выбор микрофона -->
+          <div class="setting-group">
+            <label>🎙️ Микрофон</label>
+            <select id="mic-select">
+              <option value="">Загрузка...</option>
+            </select>
+          </div>
+
+          <!-- Выбор динамика -->
+          <div class="setting-group">
+            <label>🔊 Вывод звука</label>
+            <select id="speaker-select">
+              <option value="">Загрузка...</option>
+            </select>
+          </div>
+
+          <!-- Эффекты -->
+          <div class="setting-group">
+            <label>✨ Эффекты голоса</label>
+            <div class="effects-grid">
+              <button class="effect-btn" data-effect="none">Без эффекта</button>
+              <button class="effect-btn" data-effect="reverb">Ревер</button>
+              <button class="effect-btn" data-effect="echo">Эхо</button>
+              <button class="effect-btn" data-effect="robot">Робот</button>
+            </div>
+          </div>
+
+          <!-- Задержка -->
+          <div class="setting-group">
+            <label>⏱️ Компенсация задержки</label>
+            <input type="range" id="delay-slider" min="0" max="500" value="0">
+            <span id="delay-value">0 мс</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно эффектов -->
+    <div id="effects-modal" class="modal hidden">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2>✨ Эффекты</h2>
+          <button class="btn-close" id="btn-close-effects">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="effects-list">
+            <button class="effect-option active" data-effect="none">
+              <span class="effect-icon">🎤</span>
+              <span>Чистый голос</span>
+            </button>
+            <button class="effect-option" data-effect="reverb">
+              <span class="effect-icon">🏛️</span>
+              <span>Концертный зал</span>
+            </button>
+            <button class="effect-option" data-effect="echo">
+              <span class="effect-icon">🏔️</span>
+              <span>Горное эхо</span>
+            </button>
+            <button class="effect-option" data-effect="telephone">
+              <span class="effect-icon">📞</span>
+              <span>Телефон</span>
+            </button>
+            <button class="effect-option" data-effect="deep">
+              <span class="effect-icon">🎸</span>
+              <span>Глубокий бас</span>
+            </button>
+            <button class="effect-option" data-effect="high">
+              <span class="effect-icon">🎵</span>
+              <span>Высокий голос</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/audio.js"></script>
+  <script src="/js/webrtc.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
