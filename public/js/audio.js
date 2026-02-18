@@ -27,7 +27,8 @@ class AudioManager {
     this.volume = 0.5; // Снижена с 1.0 для предотвращения feedback
 
     // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль
-    this.bluetoothMode = true;
+    // По умолчанию ВЫКЛЮЧЕН: echoCancellation работает, нет эхо в комнатном режиме
+    this.bluetoothMode = false;
 
     // Настройки качества звука
     this.audioEnhancement = true;
@@ -788,10 +789,7 @@ class AudioManager {
     // Подключаем к анализатору
     lastNode.connect(this.analyserNode);
 
-    // Если мониторинг включен, подключаем к выводу
-    if (this.isMonitoringEnabled) {
-      this.analyserNode.connect(this.audioContext.destination);
-    }
+    // Мониторинг управляется только через enableMonitoring() — не дублируем здесь
 
     console.log(`Effect applied: ${effectName}`);
   }

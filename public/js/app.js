@@ -186,11 +186,6 @@ class KaraFonApp {
     document.getElementById('mic-select').addEventListener('change', (e) => this.changeMicrophone(e.target.value));
     document.getElementById('speaker-select').addEventListener('change', (e) => this.changeSpeaker(e.target.value));
 
-    // Задержка
-    document.getElementById('delay-slider').addEventListener('input', (e) => {
-      document.getElementById('delay-value').textContent = `${e.target.value} мс`;
-    });
-
     // Эффекты
     document.querySelectorAll('.effect-option').forEach(btn => {
       btn.addEventListener('click', (e) => {
