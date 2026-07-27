@@ -211,10 +211,10 @@ class WebRTCManager {
       this._participants = data.participants;
 
       if (data.peer.id !== this.myPeerId) {
+        // Только сохраняем запись — новый участник сам инициирует звонок к нам
         const pd = this.peers.get(data.peer.id) || {};
         pd.name = pd.name || data.peer.name;
         this.peers.set(data.peer.id, pd);
-        this._callPeer(data.peer.id);
       }
 
       if (this.onParticipantJoined) {
