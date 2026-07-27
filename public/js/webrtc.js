@@ -1,458 +1,414 @@
 /**
- * KaRaFoN WebRTC Manager
- * Управление peer-to-peer соединениями для совместного пения
- * КРИТИЧЕСКИ: Маршрутизация через Web Audio API для правильного вывода на Bluetooth
+ * KaRaFoN WebRTC Manager (PeerJS)
+ * P2P аудио через PeerJS — бэкенд не требуется.
+ *
+ * Топология:
+ *   Создатель комнаты (Creator) регистрируется в PeerJS под ID = кодом комнаты.
+ *   Все участники подключают data-канал к Creator; Creator ведёт список.
+ *   Аудио: Joiner инициирует звонки ко всем участникам (mesh).
  */
 
 class WebRTCManager {
   constructor(socket, audioManager) {
-    this.socket = socket;
+    // socket-параметр оставлен для совместимости API, не используется
     this.audioManager = audioManager;
-    this.peers = new Map(); // peerId -> { connection, stream, sourceNode, gainNode, audioElement }
+    this.peers = new Map(); // peerId -> { call, dataConn, gainNode, sourceNode, audioElement, name }
     this.localStream = null;
     this.roomId = null;
-
-    // ICE серверы для NAT traversal
-    this.iceServers = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' }
-      ]
-    };
+    this.myPeerId = null;
+    this.myName = null;
+    this.isCreator = false;
+    this._participants = [];
+    this._creatorConn = null;
 
     this.onParticipantJoined = null;
     this.onParticipantLeft = null;
     this.onParticipantMicStatus = null;
-
-    this.setupSocketListeners();
   }
 
   /**
-   * Настройка обработчиков Socket.io
+   * Создать или присоединиться к комнате
    */
-  setupSocketListeners() {
-    // Новый пользователь присоединился
-    this.socket.on('user-joined', async (data) => {
-      console.log('User joined:', data);
-
-      // Создаём соединение с каждым новым участником
-      for (const participant of data.participants) {
-        if (participant.id !== this.socket.id && !this.peers.has(participant.id)) {
-          await this.createPeerConnection(participant.id, true);
-        }
-      }
-
-      if (this.onParticipantJoined) {
-        this.onParticipantJoined(data);
-      }
-    });
-
-    // Пользователь ушёл
-    this.socket.on('user-left', (data) => {
-      console.log('User left:', data);
-
-      this.removePeer(data.id);
-
-      if (this.onParticipantLeft) {
-        this.onParticipantLeft(data);
-      }
-    });
-
-    // Получен offer
-    this.socket.on('offer', async (data) => {
-      console.log('Received offer from:', data.from);
-      await this.handleOffer(data.from, data.offer);
-    });
-
-    // Получен answer
-    this.socket.on('answer', async (data) => {
-      console.log('Received answer from:', data.from);
-      await this.handleAnswer(data.from, data.answer);
-    });
-
-    // Получен ICE candidate
-    this.socket.on('ice-candidate', async (data) => {
-      console.log('Received ICE candidate from:', data.from);
-      await this.handleIceCandidate(data.from, data.candidate);
-    });
-
-    // Статус микрофона другого пользователя
-    this.socket.on('user-mic-status', (data) => {
-      if (this.onParticipantMicStatus) {
-        this.onParticipantMicStatus(data);
-      }
-    });
-  }
-
-  /**
-   * Присоединиться к комнате
-   */
-  async joinRoom(roomId, userName) {
+  async joinRoom(roomId, userName, isCreator = false) {
     this.roomId = roomId;
-
-    // Получаем локальный аудио поток
+    this.myName = userName;
+    this.isCreator = isCreator;
     this.localStream = this.audioManager.getOutputStream();
 
     if (!this.localStream) {
-      console.error('No local stream available');
+      console.error('No local stream');
       return false;
     }
 
-    // Проверяем и включаем все треки (важно для iOS)
-    const tracks = this.localStream.getAudioTracks();
-    console.log('Local stream tracks:', tracks.length);
+    this.localStream.getAudioTracks().forEach(t => { t.enabled = true; });
 
-    tracks.forEach(track => {
-      console.log('Track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
-      track.enabled = true;
+    return new Promise((resolve, reject) => {
+      const peerId = isCreator ? roomId : undefined;
+
+      this.peer = new Peer(peerId, {
+        host: '0.peerjs.com',
+        port: 443,
+        path: '/',
+        secure: true,
+        debug: 0,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
+        }
+      });
+
+      const timeoutId = setTimeout(() => reject(new Error('PeerJS connection timeout')), 12000);
+
+      this.peer.on('open', (id) => {
+        clearTimeout(timeoutId);
+        this.myPeerId = id;
+        this._participants = [{ id, name: userName }];
+        console.log('PeerJS open, id:', id, 'isCreator:', isCreator);
+
+        if (!isCreator) {
+          this._connectToCreator(roomId);
+        }
+
+        resolve(true);
+      });
+
+      this.peer.on('error', (err) => {
+        clearTimeout(timeoutId);
+        console.error('PeerJS error:', err.type, err.message);
+        if (err.type !== 'peer-unavailable') {
+          reject(err);
+        }
+      });
+
+      // Входящие data-соединения (только у creator)
+      this.peer.on('connection', (conn) => {
+        this._handleIncomingConn(conn);
+      });
+
+      // Входящие аудио-звонки (у всех)
+      this.peer.on('call', (call) => {
+        console.log('Incoming call from:', call.peer);
+        call.answer(this.localStream);
+        call.on('stream', (remoteStream) => {
+          this._playRemoteStream(call.peer, remoteStream);
+        });
+        call.on('error', (err) => console.error('Call error:', err));
+
+        const pd = this.peers.get(call.peer) || {};
+        pd.call = call;
+        this.peers.set(call.peer, pd);
+      });
+    });
+  }
+
+  /**
+   * Joiner подключается к data-каналу creator
+   */
+  _connectToCreator(creatorId) {
+    console.log('Connecting data to creator:', creatorId);
+    const conn = this.peer.connect(creatorId, {
+      metadata: { name: this.myName },
+      reliable: true
     });
 
-    // Отправляем запрос на присоединение
-    this.socket.emit('join-room', { roomId, name: userName });
+    conn.on('open', () => {
+      this._creatorConn = conn;
+      console.log('Data channel to creator open');
+    });
 
-    console.log('Joining room:', roomId);
-    return true;
+    conn.on('data', (data) => {
+      this._handleCreatorMessage(data);
+    });
+
+    conn.on('close', () => {
+      console.log('Creator data channel closed');
+      this._creatorConn = null;
+    });
+
+    conn.on('error', (err) => console.error('Creator conn error:', err));
+  }
+
+  /**
+   * Creator обрабатывает входящий data от нового участника
+   */
+  _handleIncomingConn(conn) {
+    const peerId = conn.peer;
+    const peerName = conn.metadata?.name || 'Guest';
+
+    conn.on('open', () => {
+      console.log('New participant connected:', peerId, peerName);
+
+      const pd = this.peers.get(peerId) || {};
+      pd.dataConn = conn;
+      pd.name = peerName;
+      this.peers.set(peerId, pd);
+
+      // Отправляем новому участнику текущий список (без него самого)
+      const currentList = this._getParticipantList();
+      conn.send({ type: 'peer-list', participants: currentList });
+
+      // Обновляем список с новым участником
+      const updatedList = [...currentList, { id: peerId, name: peerName }];
+      this._participants = updatedList;
+
+      // Оповещаем всех остальных о новом участнике
+      this.peers.forEach((peer, id) => {
+        if (id !== peerId && peer.dataConn?.open) {
+          peer.dataConn.send({
+            type: 'peer-joined',
+            peer: { id: peerId, name: peerName },
+            participants: updatedList
+          });
+        }
+      });
+
+      if (this.onParticipantJoined) {
+        this.onParticipantJoined({ name: peerName, participants: updatedList });
+      }
+    });
+
+    conn.on('data', (data) => {
+      if (data.type === 'mic-status') {
+        // Ретранслируем всем остальным
+        this.peers.forEach((peer, id) => {
+          if (id !== peerId && peer.dataConn?.open) {
+            peer.dataConn.send({ type: 'mic-status', id: peerId, enabled: data.enabled });
+          }
+        });
+        if (this.onParticipantMicStatus) {
+          this.onParticipantMicStatus({ id: peerId, enabled: data.enabled });
+        }
+      }
+    });
+
+    conn.on('close', () => {
+      this._handlePeerLeft(peerId);
+    });
+
+    conn.on('error', (err) => console.error('Conn error from', peerId, err));
+  }
+
+  /**
+   * Joiner обрабатывает сообщения от creator
+   */
+  _handleCreatorMessage(data) {
+    if (data.type === 'peer-list') {
+      console.log('Received peer list:', data.participants.length, 'participants');
+      this._participants = [...data.participants, { id: this.myPeerId, name: this.myName }];
+
+      // Звоним всем существующим участникам
+      data.participants.forEach(p => {
+        const pd = this.peers.get(p.id) || {};
+        pd.name = pd.name || p.name;
+        this.peers.set(p.id, pd);
+        this._callPeer(p.id);
+      });
+
+    } else if (data.type === 'peer-joined') {
+      console.log('Peer joined:', data.peer);
+      this._participants = data.participants;
+
+      if (data.peer.id !== this.myPeerId) {
+        const pd = this.peers.get(data.peer.id) || {};
+        pd.name = pd.name || data.peer.name;
+        this.peers.set(data.peer.id, pd);
+        this._callPeer(data.peer.id);
+      }
+
+      if (this.onParticipantJoined) {
+        this.onParticipantJoined({ name: data.peer.name, participants: data.participants });
+      }
+
+    } else if (data.type === 'peer-left') {
+      this._participants = data.participants;
+      this._cleanupPeer(data.peer.id);
+
+      if (this.onParticipantLeft) {
+        this.onParticipantLeft({
+          id: data.peer.id,
+          name: data.peer.name,
+          participants: data.participants
+        });
+      }
+
+    } else if (data.type === 'mic-status') {
+      if (this.onParticipantMicStatus) {
+        this.onParticipantMicStatus({ id: data.id, enabled: data.enabled });
+      }
+    }
+  }
+
+  /**
+   * Инициировать аудио-звонок к участнику
+   */
+  _callPeer(peerId) {
+    if (!this.peer || !this.localStream) return;
+    console.log('Calling peer:', peerId);
+
+    setTimeout(() => {
+      const call = this.peer.call(peerId, this.localStream);
+      if (!call) {
+        console.warn('Could not create call to:', peerId);
+        return;
+      }
+      call.on('stream', (remoteStream) => {
+        this._playRemoteStream(peerId, remoteStream);
+      });
+      call.on('error', (err) => console.error('Outgoing call error to', peerId, err));
+
+      const pd = this.peers.get(peerId) || {};
+      pd.call = call;
+      this.peers.set(peerId, pd);
+    }, 400);
+  }
+
+  /**
+   * Воспроизвести удалённый поток через Web Audio API
+   */
+  _playRemoteStream(peerId, stream) {
+    console.log('Playing remote stream from:', peerId);
+    const pd = this.peers.get(peerId) || {};
+
+    if (pd.sourceNode) { try { pd.sourceNode.disconnect(); } catch(e) {} }
+    if (pd.gainNode) { try { pd.gainNode.disconnect(); } catch(e) {} }
+    if (pd.audioElement) {
+      pd.audioElement.srcObject = null;
+      try { pd.audioElement.remove(); } catch(e) {}
+      pd.audioElement = null;
+    }
+
+    const audioCtx = this.audioManager?.audioContext;
+
+    if (audioCtx && audioCtx.state !== 'closed') {
+      try {
+        if (audioCtx.state === 'suspended') audioCtx.resume().catch(console.error);
+
+        const sourceNode = audioCtx.createMediaStreamSource(stream);
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = 1.0;
+        sourceNode.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        pd.sourceNode = sourceNode;
+        pd.gainNode = gainNode;
+        this.peers.set(peerId, pd);
+        console.log('Remote via Web Audio API:', peerId);
+        return;
+      } catch(err) {
+        console.error('Web Audio failed, using fallback:', err);
+      }
+    }
+
+    const audio = document.createElement('audio');
+    audio.srcObject = stream;
+    audio.autoplay = true;
+    audio.playsInline = true;
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('webkit-playsinline', 'true');
+    audio.style.display = 'none';
+    document.body.appendChild(audio);
+    audio.play().catch(err => {
+      console.error('Fallback audio play failed:', err);
+      setTimeout(() => audio.play().catch(console.error), 500);
+    });
+    pd.audioElement = audio;
+    this.peers.set(peerId, pd);
+    console.log('Remote via fallback audio element:', peerId);
+  }
+
+  /**
+   * Участник ушёл
+   */
+  _handlePeerLeft(peerId) {
+    const pd = this.peers.get(peerId);
+    if (!pd) return;
+
+    const name = pd.name || 'Unknown';
+    this._cleanupPeer(peerId);
+
+    if (this.isCreator) {
+      const participants = this._getParticipantList();
+      this._participants = participants;
+      this.peers.forEach((peer) => {
+        if (peer.dataConn?.open) {
+          peer.dataConn.send({ type: 'peer-left', peer: { id: peerId, name }, participants });
+        }
+      });
+    }
+
+    if (this.onParticipantLeft) {
+      this.onParticipantLeft({ id: peerId, name, participants: this._getParticipantList() });
+    }
+  }
+
+  /**
+   * Освободить ресурсы конкретного peer
+   */
+  _cleanupPeer(peerId) {
+    const pd = this.peers.get(peerId);
+    if (!pd) return;
+
+    if (pd.sourceNode) { try { pd.sourceNode.disconnect(); } catch(e) {} }
+    if (pd.gainNode) { try { pd.gainNode.disconnect(); } catch(e) {} }
+    if (pd.audioElement) {
+      pd.audioElement.srcObject = null;
+      try { pd.audioElement.remove(); } catch(e) {}
+    }
+    if (pd.call) { try { pd.call.close(); } catch(e) {} }
+    if (pd.dataConn) { try { pd.dataConn.close(); } catch(e) {} }
+
+    this.peers.delete(peerId);
+    this._participants = this._participants.filter(p => p.id !== peerId);
+    console.log('Peer cleaned up:', peerId);
+  }
+
+  /**
+   * Текущий список участников (включая себя)
+   */
+  _getParticipantList() {
+    const list = [{ id: this.myPeerId, name: this.myName }];
+    this.peers.forEach((pd, id) => {
+      if (pd.name) list.push({ id, name: pd.name });
+    });
+    return list;
   }
 
   /**
    * Покинуть комнату
    */
   leaveRoom() {
-    // Закрываем все соединения
-    this.peers.forEach((peer, peerId) => {
-      this.removePeer(peerId);
-    });
+    Array.from(this.peers.keys()).forEach(id => this._cleanupPeer(id));
+
+    if (this._creatorConn) {
+      try { this._creatorConn.close(); } catch(e) {}
+      this._creatorConn = null;
+    }
+
+    if (this.peer) {
+      try { this.peer.destroy(); } catch(e) {}
+      this.peer = null;
+    }
 
     this.roomId = null;
+    this._participants = [];
     console.log('Left room');
   }
 
   /**
-   * Создать peer connection
+   * Отправить статус микрофона
    */
-  async createPeerConnection(peerId, isInitiator) {
-    console.log(`Creating peer connection with ${peerId}, initiator: ${isInitiator}`);
-
-    const connection = new RTCPeerConnection(this.iceServers);
-
-    // Добавляем локальный поток
-    if (this.localStream) {
-      const tracks = this.localStream.getTracks();
-      console.log(`Adding ${tracks.length} tracks to peer connection`);
-
-      tracks.forEach(track => {
-        console.log(`Adding track: ${track.kind}, label: ${track.label}, enabled: ${track.enabled}, muted: ${track.muted}`);
-        const sender = connection.addTrack(track, this.localStream);
-        console.log('Track added, sender:', sender);
+  sendMicStatus(enabled) {
+    if (this.isCreator) {
+      this.peers.forEach((pd) => {
+        if (pd.dataConn?.open) {
+          pd.dataConn.send({ type: 'mic-status', id: this.myPeerId, enabled });
+        }
       });
-    } else {
-      console.error('⚠️ No local stream available for peer connection!');
+    } else if (this._creatorConn?.open) {
+      this._creatorConn.send({ type: 'mic-status', enabled });
     }
-
-    // Обработка ICE candidates
-    connection.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.socket.emit('ice-candidate', {
-          to: peerId,
-          candidate: event.candidate
-        });
-      }
-    };
-
-    // Обработка состояния соединения
-    connection.onconnectionstatechange = () => {
-      console.log(`Connection state with ${peerId}:`, connection.connectionState);
-
-      if (connection.connectionState === 'failed' || connection.connectionState === 'disconnected') {
-        this.removePeer(peerId);
-      }
-    };
-
-    // Получение удалённого потока - МАРШРУТИЗИРУЕМ ЧЕРЕЗ WEB AUDIO API
-    connection.ontrack = (event) => {
-      console.log(`Received track from ${peerId}`);
-
-      const peer = this.peers.get(peerId);
-      if (peer) {
-        peer.stream = event.streams[0];
-        // КРИТИЧЕСКИ: Воспроизводим через Web Audio API на тот же выход (Bluetooth колонку)
-        this.playRemoteStreamThroughWebAudio(peerId, event.streams[0]);
-      }
-    };
-
-    // Сохраняем соединение
-    this.peers.set(peerId, {
-      connection,
-      stream: null,
-      sourceNode: null,
-      gainNode: null,
-      audioElement: null
-    });
-
-    // Если инициатор, создаём offer
-    if (isInitiator) {
-      await this.createOffer(peerId);
-    }
-
-    return connection;
-  }
-
-  /**
-   * Создать и отправить offer
-   */
-  async createOffer(peerId) {
-    const peer = this.peers.get(peerId);
-    if (!peer) return;
-
-    try {
-      const offer = await peer.connection.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: false
-      });
-
-      await peer.connection.setLocalDescription(offer);
-
-      this.socket.emit('offer', {
-        to: peerId,
-        offer: peer.connection.localDescription
-      });
-
-      console.log('Offer sent to:', peerId);
-    } catch (error) {
-      console.error('Error creating offer:', error);
-    }
-  }
-
-  /**
-   * Обработать полученный offer
-   */
-  async handleOffer(peerId, offer) {
-    let peer = this.peers.get(peerId);
-
-    if (!peer) {
-      await this.createPeerConnection(peerId, false);
-      peer = this.peers.get(peerId);
-    }
-
-    try {
-      await peer.connection.setRemoteDescription(new RTCSessionDescription(offer));
-
-      const answer = await peer.connection.createAnswer();
-      await peer.connection.setLocalDescription(answer);
-
-      this.socket.emit('answer', {
-        to: peerId,
-        answer: peer.connection.localDescription
-      });
-
-      console.log('Answer sent to:', peerId);
-    } catch (error) {
-      console.error('Error handling offer:', error);
-    }
-  }
-
-  /**
-   * Обработать полученный answer
-   */
-  async handleAnswer(peerId, answer) {
-    const peer = this.peers.get(peerId);
-    if (!peer) return;
-
-    try {
-      await peer.connection.setRemoteDescription(new RTCSessionDescription(answer));
-      console.log('Answer processed from:', peerId);
-    } catch (error) {
-      console.error('Error handling answer:', error);
-    }
-  }
-
-  /**
-   * Обработать ICE candidate
-   */
-  async handleIceCandidate(peerId, candidate) {
-    const peer = this.peers.get(peerId);
-    if (!peer) return;
-
-    try {
-      await peer.connection.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch (error) {
-      console.error('Error adding ICE candidate:', error);
-    }
-  }
-
-  /**
-   * КРИТИЧЕСКИ ВАЖНО: Воспроизвести удалённый поток через Web Audio API
-   * Это гарантирует, что звук пойдёт на тот же выход (Bluetooth колонку),
-   * что и локальный микрофон
-   */
-  async playRemoteStreamThroughWebAudio(peerId, stream) {
-    const peer = this.peers.get(peerId);
-    if (!peer) return;
-
-    // Проверяем треки
-    const tracks = stream.getAudioTracks();
-    console.log('Remote stream tracks:', tracks.length);
-    tracks.forEach(track => {
-      console.log('Remote track:', track.label, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
-    });
-
-    // Получаем AudioContext из audioManager
-    const audioContext = this.audioManager.audioContext;
-    if (!audioContext) {
-      console.error('No AudioContext available, falling back to audio element');
-      this.playRemoteStreamFallback(peerId, stream);
-      return;
-    }
-
-    // iOS: Resume AudioContext если suspended
-    if (audioContext.state === 'suspended') {
-      try {
-        await audioContext.resume();
-        console.log('AudioContext resumed for remote stream playback');
-      } catch (e) {
-        console.error('Failed to resume AudioContext, falling back:', e);
-        this.playRemoteStreamFallback(peerId, stream);
-        return;
-      }
-    }
-
-    // Отключаем старые узлы если есть
-    if (peer.sourceNode) {
-      try { peer.sourceNode.disconnect(); } catch(e) {}
-    }
-    if (peer.gainNode) {
-      try { peer.gainNode.disconnect(); } catch(e) {}
-    }
-    // Удаляем fallback audio element если был
-    if (peer.audioElement) {
-      peer.audioElement.srcObject = null;
-      peer.audioElement.remove();
-      peer.audioElement = null;
-    }
-
-    try {
-      // Создаём source из удалённого потока
-      const sourceNode = audioContext.createMediaStreamSource(stream);
-
-      // Создаём gain для управления громкостью удалённого участника
-      const gainNode = audioContext.createGain();
-      gainNode.gain.value = 1.0;
-
-      // Подключаем напрямую к выходу AudioContext
-      // Это гарантирует воспроизведение через ту же Bluetooth колонку
-      sourceNode.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-
-      // Сохраняем узлы для управления
-      peer.sourceNode = sourceNode;
-      peer.gainNode = gainNode;
-
-      console.log(`✅ Remote stream from ${peerId} now playing through Web Audio API (same output as local mic)`);
-    } catch (error) {
-      console.error('Error setting up Web Audio for remote stream, falling back:', error);
-      this.playRemoteStreamFallback(peerId, stream);
-    }
-  }
-
-  /**
-   * Fallback: воспроизведение через audio element (для iOS совместимости)
-   */
-  playRemoteStreamFallback(peerId, stream) {
-    const peer = this.peers.get(peerId);
-    if (!peer) return;
-
-    // Удаляем старый audio элемент если есть
-    if (peer.audioElement) {
-      peer.audioElement.srcObject = null;
-      peer.audioElement.remove();
-    }
-
-    // Создаём новый audio элемент
-    const audio = document.createElement('audio');
-    audio.srcObject = stream;
-    audio.autoplay = true;
-    audio.playsInline = true;
-    audio.volume = 1.0;
-
-    // Атрибуты для iOS совместимости
-    audio.setAttribute('playsinline', 'true');
-    audio.setAttribute('webkit-playsinline', 'true');
-
-    // Скрытый элемент в DOM
-    audio.style.display = 'none';
-    document.body.appendChild(audio);
-
-    peer.audioElement = audio;
-
-    // Пытаемся воспроизвести с повторными попытками для iOS
-    const tryPlay = async () => {
-      try {
-        await audio.play();
-        console.log('✅ Playing remote stream (fallback) from:', peerId);
-      } catch (error) {
-        console.error('Error playing remote stream:', error);
-        // Повторная попытка через 500ms (важно для iOS)
-        setTimeout(async () => {
-          try {
-            await audio.play();
-            console.log('✅ Playing remote stream (retry) from:', peerId);
-          } catch (retryError) {
-            console.error('Failed to play after retry:', retryError);
-          }
-        }, 500);
-      }
-    };
-
-    tryPlay();
-  }
-
-  /**
-   * Установить громкость удалённого участника
-   */
-  setRemoteVolume(peerId, volume) {
-    const peer = this.peers.get(peerId);
-    if (peer) {
-      if (peer.gainNode) {
-        peer.gainNode.gain.value = volume;
-      }
-      if (peer.audioElement) {
-        peer.audioElement.volume = volume;
-      }
-      console.log(`Remote volume for ${peerId} set to:`, volume);
-    }
-  }
-
-  /**
-   * Удалить peer
-   */
-  removePeer(peerId) {
-    const peer = this.peers.get(peerId);
-    if (!peer) return;
-
-    // Отключаем Web Audio узлы
-    if (peer.sourceNode) {
-      try { peer.sourceNode.disconnect(); } catch(e) {}
-    }
-    if (peer.gainNode) {
-      try { peer.gainNode.disconnect(); } catch(e) {}
-    }
-
-    // Удаляем audio element (fallback)
-    if (peer.audioElement) {
-      peer.audioElement.srcObject = null;
-      peer.audioElement.remove();
-    }
-
-    // Закрываем соединение
-    if (peer.connection) {
-      peer.connection.close();
-    }
-
-    this.peers.delete(peerId);
-    console.log('Peer removed:', peerId);
   }
 
   /**
@@ -460,46 +416,26 @@ class WebRTCManager {
    */
   async updateLocalStream() {
     this.localStream = this.audioManager.getOutputStream();
-
     if (!this.localStream) return;
 
-    // Обновляем треки во всех соединениях
-    this.peers.forEach((peer, peerId) => {
-      const senders = peer.connection.getSenders();
-
+    this.peers.forEach((pd) => {
+      const pc = pd.call?.peerConnection;
+      if (!pc) return;
+      const senders = pc.getSenders();
       this.localStream.getTracks().forEach(track => {
-        const sender = senders.find(s => s.track && s.track.kind === track.kind);
-        if (sender) {
-          sender.replaceTrack(track);
-        }
+        const sender = senders.find(s => s.track?.kind === track.kind);
+        if (sender) sender.replaceTrack(track).catch(console.error);
       });
     });
-
-    console.log('Local stream updated for all peers');
   }
 
-  /**
-   * Отправить статус микрофона
-   */
-  sendMicStatus(enabled) {
-    this.socket.emit('mic-status', { enabled });
-  }
-
-  /**
-   * Получить количество участников
-   */
   getParticipantCount() {
-    return this.peers.size + 1; // +1 for self
+    return this.peers.size + 1;
   }
 
-  /**
-   * Освободить ресурсы
-   */
   destroy() {
     this.leaveRoom();
-    console.log('WebRTCManager destroyed');
   }
 }
 
-// Экспортируем глобально
 window.WebRTCManager = WebRTCManager;

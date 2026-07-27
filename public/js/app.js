@@ -47,8 +47,8 @@ class KaraFonApp {
     // Инициализируем аудио менеджер
     this.audioManager = new AudioManager();
 
-    // Инициализируем WebRTC
-    this.webrtcManager = new WebRTCManager(this.socket, this.audioManager);
+    // Инициализируем WebRTC (PeerJS, socket не нужен)
+    this.webrtcManager = new WebRTCManager(null, this.audioManager);
     this.setupWebRTCCallbacks();
 
     // Настраиваем UI
@@ -95,27 +95,12 @@ class KaraFonApp {
 
   /**
    * Подключение к Socket.io серверу
+   * Заменено PeerJS — подключение происходит по требованию при входе в комнату
    */
   async connectSocket() {
-    return new Promise((resolve) => {
-      this.socket = io({
-        transports: ['websocket', 'polling']
-      });
-
-      this.socket.on('connect', () => {
-        console.log('Connected to server:', this.socket.id);
-        resolve();
-      });
-
-      this.socket.on('disconnect', () => {
-        console.log('Disconnected from server');
-        this.showToast('Соединение потеряно');
-      });
-
-      this.socket.on('connect_error', (error) => {
-        console.error('Connection error:', error);
-      });
-    });
+    // PeerJS не требует постоянного соединения с сервером
+    this.socket = null;
+    return Promise.resolve();
   }
 
   /**
@@ -352,8 +337,8 @@ class KaraFonApp {
     this.roomId = this.generateRoomId();
     this.isInRoom = true;
 
-    // Присоединяемся к комнате через WebRTC
-    await this.webrtcManager.joinRoom(this.roomId, this.userName);
+    // Создаём комнату через PeerJS (isCreator = true)
+    await this.webrtcManager.joinRoom(this.roomId, this.userName, true);
 
     // Обновляем UI
     document.getElementById('room-label').textContent = 'Комната';
@@ -361,7 +346,7 @@ class KaraFonApp {
     document.getElementById('share-room-code').textContent = this.roomId;
     document.getElementById('participants-panel').classList.remove('hidden');
 
-    this.updateParticipantsList([{ id: this.socket.id, name: this.userName }]);
+    this.updateParticipantsList([{ id: this.webrtcManager.myPeerId, name: this.userName }]);
 
     this.showScreen('karaoke');
     this.startVisualizer();
@@ -386,8 +371,8 @@ class KaraFonApp {
     this.roomId = roomCode;
     this.isInRoom = true;
 
-    // Присоединяемся к комнате через WebRTC
-    await this.webrtcManager.joinRoom(this.roomId, this.userName);
+    // Присоединяемся к комнате через PeerJS (isCreator = false)
+    await this.webrtcManager.joinRoom(this.roomId, this.userName, false);
 
     // Обновляем UI
     document.getElementById('room-label').textContent = 'Комната';
@@ -571,14 +556,16 @@ class KaraFonApp {
   updateParticipantsList(participants) {
     const container = document.getElementById('participants-list');
     container.innerHTML = '';
+    const myId = this.webrtcManager?.myPeerId;
 
     participants.forEach(p => {
+      const isMe = p.id === myId;
       const badge = document.createElement('div');
       badge.className = 'participant-badge';
       badge.id = `participant-${p.id}`;
       badge.innerHTML = `
-        <span class="mic-indicator ${p.id === this.socket.id ? 'active' : ''}"></span>
-        <span>${p.name}${p.id === this.socket.id ? ' (вы)' : ''}</span>
+        <span class="mic-indicator ${isMe ? 'active' : ''}"></span>
+        <span>${p.name}${isMe ? ' (вы)' : ''}</span>
       `;
       container.appendChild(badge);
     });
