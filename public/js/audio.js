@@ -219,6 +219,13 @@ class AudioManager {
     // Создаём источник
     this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
 
+    // Точка нулевой задержки для мониторинга — подключается ПРЯМО от источника,
+    // ДО компрессоров и лимитера. Это убирает ~12ms дополнительной задержки
+    // из DynamicsCompressor lookahead при прослушивании своего голоса.
+    this.monitorInsertNode = this.audioContext.createGain();
+    this.monitorInsertNode.gain.value = 1.0;
+    this.sourceNode.connect(this.monitorInsertNode);
+
     // === УЛУЧШЕНИЕ КАЧЕСТВА ЗВУКА ===
 
     // 1. High-pass фильтр - убирает низкочастотный гул (< 80 Hz)
@@ -541,12 +548,15 @@ class AudioManager {
 
   /**
    * Noise Gate - глушит микрофон когда не поёшь
+   * Использует setInterval(5ms) вместо requestAnimationFrame (~16.7ms)
+   * для втрое более быстрой реакции на изменение уровня сигнала.
    */
   startNoiseGate() {
     if (this.noiseGateAnimationId) return;
 
     const analyser = this.audioContext.createAnalyser();
-    analyser.fftSize = 512;
+    // fftSize 256 вместо 512 — меньше буфер, меньше задержка анализа
+    analyser.fftSize = 256;
     this.sourceNode.connect(analyser);
 
     const bufferLength = analyser.frequencyBinCount;
@@ -577,16 +587,17 @@ class AudioManager {
       }
 
       this.noiseGateOpen = targetGain > 0.5;
-      this.noiseGateAnimationId = requestAnimationFrame(checkLevel);
     };
 
-    checkLevel();
-    console.log('Noise Gate started, threshold:', this.noiseGateThreshold, 'dB');
+    // 5ms интервал вместо requestAnimationFrame (~16.7ms) — реакция в 3x быстрее
+    this.noiseGateAnimationId = setInterval(checkLevel, 5);
+    checkLevel(); // Первый вызов немедленно, не ждём 5ms
+    console.log('Noise Gate started (5ms interval), threshold:', this.noiseGateThreshold, 'dB');
   }
 
   stopNoiseGate() {
     if (this.noiseGateAnimationId) {
-      cancelAnimationFrame(this.noiseGateAnimationId);
+      clearInterval(this.noiseGateAnimationId);
       this.noiseGateAnimationId = null;
     }
   }
@@ -715,26 +726,35 @@ class AudioManager {
   /**
    * Включить/выключить мониторинг
    * ВНИМАНИЕ: Может вызвать feedback! Используйте наушники
+   *
+   * Мониторинг подключается к monitorInsertNode — точке ПЕРЕД компрессорами
+   * и лимитером. Это убирает ~12ms задержки DynamicsCompressor lookahead,
+   * которая была бы слышна при мониторинге своего голоса через наушники.
    */
   enableMonitoring(enabled) {
-    if (!this.audioContext || !this.analyserNode) return;
+    if (!this.audioContext) return;
 
     this.isMonitoringEnabled = enabled;
 
+    // Используем monitorInsertNode (до компрессоров) для минимальной задержки.
+    // Если цепочка ещё не построена, используем sourceNode как fallback.
+    const monitorSource = this.monitorInsertNode || this.sourceNode;
+    if (!monitorSource) return;
+
     if (enabled) {
-      // Создаём gain для мониторинга с пониженной громкостью (30%)
+      // Создаём gain для мониторинга с пониженной громкостью
       if (!this.monitorGainNode) {
         this.monitorGainNode = this.audioContext.createGain();
-        this.monitorGainNode.gain.value = 0.3; // Сильно снижаем для предотвращения feedback
+        this.monitorGainNode.gain.value = 0.3; // Снижаем для предотвращения feedback
       }
 
-      this.analyserNode.connect(this.monitorGainNode);
+      monitorSource.connect(this.monitorGainNode);
       this.monitorGainNode.connect(this.audioContext.destination);
-      console.log('⚠️ Monitoring enabled - используйте наушники!');
+      console.log('⚠️ Monitoring enabled (zero-latency path) - используйте наушники!');
     } else {
       try {
         if (this.monitorGainNode) {
-          this.analyserNode.disconnect(this.monitorGainNode);
+          monitorSource.disconnect(this.monitorGainNode);
           this.monitorGainNode.disconnect(this.audioContext.destination);
         }
       } catch (e) {
@@ -1066,6 +1086,7 @@ class AudioManager {
 
     const nodes = [
       this.sourceNode,
+      this.monitorInsertNode,
       this.gainNode,
       this.analyserNode,
       this.highpassFilter,
