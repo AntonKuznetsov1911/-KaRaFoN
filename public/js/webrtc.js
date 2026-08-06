@@ -40,7 +40,7 @@ class WebRTCManager {
       return false;
     }
 
-    this.localStream.getAudioTracks().forEach(t => { t.enabled = true; });
+    // Состояние треков управляется из app.js через setMicEnabled() — не переопределяем здесь.
 
     return new Promise((resolve, reject) => {
       const peerId = isCreator ? roomId : undefined;
@@ -77,7 +77,10 @@ class WebRTCManager {
       this.peer.on('error', (err) => {
         clearTimeout(timeoutId);
         console.error('PeerJS error:', err.type, err.message);
-        if (err.type !== 'peer-unavailable') {
+        if (err.type === 'peer-unavailable') {
+          // Код комнаты не существует в PeerJS — конкретное сообщение для UX
+          reject(new Error('Комната не найдена. Проверь код комнаты.'));
+        } else {
           reject(err);
         }
       });

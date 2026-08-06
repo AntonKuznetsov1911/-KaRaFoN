@@ -228,6 +228,13 @@ class AudioManager {
    * поддерживает → браузер получает отказ от ОС → тихо падает.
    */
   async requestMicrophoneAccess(deviceId = null) {
+    // Останавливаем старый поток: иначе треки остаются активными в фоне
+    // (видна иконка микрофона в шторке уведомлений, лишний расход батареи)
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(t => t.stop());
+      this.mediaStream = null;
+    }
+
     // iOS: Обязательно resume AudioContext перед getUserMedia
     if (this.audioContext && this.audioContext.state === 'suspended') {
       console.log('Resuming AudioContext before microphone access...');
@@ -517,6 +524,13 @@ class AudioManager {
 
     // Применяем эффект если выбран
     this.applyEffect(this.currentEffect);
+
+    // Восстанавливаем мониторинг если был включён до перестройки цепочки.
+    // disconnectAll() разрывает monitorGainNode → destination, поэтому без этого
+    // мониторинг перестаёт работать после любого пересборки (смена пресета, AF и т.д.)
+    if (this.isMonitoringEnabled) {
+      this.enableMonitoring(true);
+    }
 
     console.log('Audio chain setup complete');
     return true;
@@ -880,10 +894,10 @@ class AudioManager {
       // Создаём gain для мониторинга с пониженной громкостью
       if (!this.monitorGainNode) {
         this.monitorGainNode = this.audioContext.createGain();
-        // 0.15 (−16 dB) — достаточно чтобы слышать себя, но не создавать петлю обратной связи.
-        // Раньше 0.3 было слишком громко и усиливало любой остаточный feedback.
-        this.monitorGainNode.gain.value = 0.15;
       }
+      // Громкость мониторинга масштабируется текущим значением слайдера (this.volume).
+      // volume=0.5(дефолт)→0.15; 1.0→0.30; 2.0→0.60. Макс 0.60 — безопасный feedback-потолок.
+      this.monitorGainNode.gain.value = Math.min(0.6, this.volume * 0.3);
 
       monitorSource.connect(this.monitorGainNode);
       this.monitorGainNode.connect(this.audioContext.destination);
@@ -1121,6 +1135,11 @@ class AudioManager {
     if (this.gainNode) {
       this.gainNode.gain.value = value;
     }
+    // Обновляем громкость мониторинга — слайдер должен влиять на то что слышит певец.
+    // Формула: value=0.5(дефолт)→0.15, value=1.0→0.30, value=2.0→0.60(макс, feedback-safe)
+    if (this.monitorGainNode) {
+      this.monitorGainNode.gain.value = Math.min(0.6, value * 0.3);
+    }
   }
 
   /**
@@ -1218,8 +1237,9 @@ class AudioManager {
    * Отключить все узлы
    */
   disconnectAll() {
-    // Останавливаем мониторинг уровня
+    // Останавливаем все фоновые циклы
     this.stopLevelMeter();
+    this.stopNoiseGate(); // 5ms setInterval — иначе продолжает крутиться после разбора цепочки
 
     const nodes = [
       this.sourceNode,

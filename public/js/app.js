@@ -180,8 +180,8 @@ class KaraFonApp {
     document.getElementById('mic-select').addEventListener('change', (e) => this.changeMicrophone(e.target.value));
     document.getElementById('speaker-select').addEventListener('change', (e) => this.changeSpeaker(e.target.value));
 
-    // Эффекты
-    document.querySelectorAll('.effect-option').forEach(btn => {
+    // Эффекты (модальное окно эффектов + кнопки в секции настроек — оба набора)
+    document.querySelectorAll('.effect-option, .effect-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const effect = e.currentTarget.dataset.effect;
         this.applyEffect(effect);
@@ -386,7 +386,15 @@ class KaraFonApp {
     this.isInRoom = true;
 
     // Создаём комнату через PeerJS (isCreator = true)
-    await this.webrtcManager.joinRoom(this.roomId, this.userName, true);
+    try {
+      await this.webrtcManager.joinRoom(this.roomId, this.userName, true);
+    } catch (err) {
+      console.error('Failed to create room:', err);
+      this.showToast('❌ Нет связи с PeerJS сервером. Проверь интернет.');
+      this.isInRoom = false;
+      this.roomId = null;
+      return;
+    }
 
     // Обновляем UI
     document.getElementById('room-label').textContent = 'Комната';
@@ -399,7 +407,7 @@ class KaraFonApp {
     this.showScreen('karaoke');
     this.startVisualizer();
 
-    this.showToast('Комната создана!');
+    this.showToast('🎉 Комната создана!');
   }
 
   /**
@@ -420,7 +428,19 @@ class KaraFonApp {
     this.isInRoom = true;
 
     // Присоединяемся к комнате через PeerJS (isCreator = false)
-    await this.webrtcManager.joinRoom(this.roomId, this.userName, false);
+    try {
+      await this.webrtcManager.joinRoom(this.roomId, this.userName, false);
+    } catch (err) {
+      console.error('Failed to join room:', err);
+      // peer-unavailable → "Комната не найдена" (из webrtc.js); остальное — сетевые ошибки
+      const msg = err.message?.startsWith('Комната')
+        ? `❌ ${err.message}`
+        : '❌ Не удалось подключиться. Проверь код и интернет.';
+      this.showToast(msg);
+      this.isInRoom = false;
+      this.roomId = null;
+      return;
+    }
 
     // Обновляем UI
     document.getElementById('room-label').textContent = 'Комната';
@@ -459,6 +479,10 @@ class KaraFonApp {
     // Настраиваем аудио цепочку
     this.audioManager.setupAudioChain();
 
+    // Микрофон стартует заглушённым: getUserMedia включает трек по умолчанию,
+    // но мы хотим чтобы пользователь явно нажал кнопку 🎤 прежде чем петь/транслировать.
+    this.audioManager.setMicEnabled(false);
+
     // Обновляем список устройств в настройках
     this.updateDeviceSelectors();
 
@@ -495,6 +519,9 @@ class KaraFonApp {
       const ok = await this.audioManager.requestMicrophoneAccess();
       if (ok) {
         this.audioManager.setupAudioChain();
+        // Восстанавливаем состояние mic: новый поток включает треки по умолчанию,
+        // но пользователь мог быть на паузе — нужно это сохранить
+        this.audioManager.setMicEnabled(this.isMicActive);
         // Обновляем поток в WebRTC если в комнате
         if (this.isInRoom) {
           await this.webrtcManager.updateLocalStream();
@@ -612,8 +639,8 @@ class KaraFonApp {
       this.webrtcManager.updateLocalStream();
     }
 
-    // Обновляем UI
-    document.querySelectorAll('.effect-option').forEach(btn => {
+    // Обновляем UI (оба набора кнопок: модал эффектов и секция настроек)
+    document.querySelectorAll('.effect-option, .effect-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.effect === effectName);
     });
 
@@ -627,8 +654,12 @@ class KaraFonApp {
     if (!deviceId) return;
 
     const success = await this.audioManager.switchMicrophone(deviceId);
-    if (success && this.isInRoom) {
-      await this.webrtcManager.updateLocalStream();
+    if (success) {
+      // switchMicrophone строит новую цепочку — восстанавливаем текущее состояние mic
+      this.audioManager.setMicEnabled(this.isMicActive);
+      if (this.isInRoom) {
+        await this.webrtcManager.updateLocalStream();
+      }
     }
   }
 
@@ -748,6 +779,8 @@ class KaraFonApp {
       this.stopVisualizer();
       this.audioManager?.setMicEnabled(false);
       this.audioManager?.enableMonitoring(false);
+      this.audioManager?.stopNoiseGate();   // прекращаем 5ms setInterval (иначе крутится вечно)
+      this.audioManager?.stopLevelMeter();  // прекращаем requestAnimationFrame индикатора
 
       if (this.isInRoom) {
         this.webrtcManager?.leaveRoom();
