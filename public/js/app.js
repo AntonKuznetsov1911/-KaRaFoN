@@ -28,6 +28,9 @@ class KaraFonApp {
     this.visualizerCtx = null;
     this.visualizerAnimationId = null;
 
+    // PWA install prompt
+    this.deferredInstallPrompt = null;
+
     // Инициализация
     this.init();
   }
@@ -277,6 +280,45 @@ class KaraFonApp {
     // Canvas для визуализации
     this.visualizerCanvas = document.getElementById('visualizer');
     this.visualizerCtx = this.visualizerCanvas.getContext('2d');
+
+    // ── PWA Install ──────────────────────────────────────────────────────────
+    // Браузер генерирует это событие когда приложение можно установить как PWA.
+    // Мы его перехватываем и показываем свою кнопку вместо стандартного баннера.
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault(); // Не показывать автоматический баннер браузера
+      this.deferredInstallPrompt = e;
+      // Показываем карточку «Установить приложение»
+      const card = document.getElementById('install-card');
+      if (card) card.style.display = '';
+      console.log('[PWA] Install prompt ready');
+    });
+
+    // Когда установка завершена — прячем кнопку
+    window.addEventListener('appinstalled', () => {
+      this.deferredInstallPrompt = null;
+      const card = document.getElementById('install-card');
+      if (card) card.style.display = 'none';
+      this.showToast('✅ KaRaFoN установлен на рабочий стол!');
+      console.log('[PWA] App installed');
+    });
+
+    // Кнопка «Установить»
+    document.getElementById('btn-install-pwa')?.addEventListener('click', async () => {
+      if (!this.deferredInstallPrompt) {
+        // Если prompt не доступен — показываем инструкцию
+        this.showInstallInstructions();
+        return;
+      }
+      // Показываем нативный диалог установки браузера
+      this.deferredInstallPrompt.prompt();
+      const { outcome } = await this.deferredInstallPrompt.userChoice;
+      if (outcome === 'accepted') {
+        this.showToast('⬇️ Установка началась...');
+      }
+      this.deferredInstallPrompt = null;
+      const card = document.getElementById('install-card');
+      if (card) card.style.display = 'none';
+    });
   }
 
   /**
@@ -781,6 +823,65 @@ class KaraFonApp {
     setTimeout(() => {
       toast.remove();
     }, 3000);
+  }
+
+  /**
+   * Показать инструкцию по установке (когда браузер не поддерживает prompt)
+   */
+  showInstallInstructions() {
+    // Убираем старое если есть
+    document.getElementById('install-overlay')?.remove();
+
+    const ua = navigator.userAgent.toLowerCase();
+    const isIOS = /iphone|ipad|ipod/.test(ua);
+    const isSamsung = /samsungbrowser/.test(ua);
+
+    let steps = '';
+    if (isIOS) {
+      steps = `
+        <p>1. Нажми кнопку <strong>«Поделиться»</strong> внизу Safari (квадрат со стрелкой ↑)</p>
+        <p>2. Прокрути вниз и выбери <strong>«На экран Домой»</strong></p>
+        <p>3. Нажми <strong>«Добавить»</strong></p>`;
+    } else if (isSamsung) {
+      steps = `
+        <p>1. Нажми меню <strong>⋮</strong> (три точки) в браузере</p>
+        <p>2. Выбери <strong>«Добавить страницу на…»</strong></p>
+        <p>3. Выбери <strong>«Приложения»</strong> (не «Главный экран»)</p>`;
+    } else {
+      steps = `
+        <p>1. Открой <strong>Chrome</strong> на телефоне (не Telegram!)</p>
+        <p>2. Перейди по ссылке:<br><code>https://antonkuznetsov1911.github.io/-KaRaFoN/</code></p>
+        <p>3. Нажми меню <strong>⋮</strong> → <strong>«Установить приложение»</strong></p>`;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'install-overlay';
+    overlay.innerHTML = `
+      <div class="install-sheet">
+        <div class="install-sheet-header">
+          <span>📲 Как установить KaRaFoN</span>
+          <button onclick="document.getElementById('install-overlay').remove()">✕</button>
+        </div>
+        <div class="install-sheet-body">
+          ${steps}
+          <button class="btn btn-primary install-copy-btn" id="btn-copy-link">
+            📋 Скопировать ссылку
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    document.getElementById('btn-copy-link')?.addEventListener('click', async () => {
+      const url = 'https://antonkuznetsov1911.github.io/-KaRaFoN/';
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = url; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy'); ta.remove();
+      }
+      this.showToast('✅ Ссылка скопирована!');
+    });
   }
 
   /**

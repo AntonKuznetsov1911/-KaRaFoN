@@ -1026,6 +1026,77 @@ body {
   animation: pulse 0.5s ease-in-out infinite;
 }
 
+/* ── PWA Install Overlay ──────────────────────────────────────────────────── */
+#install-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  z-index: 300;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+
+.install-sheet {
+  width: 100%;
+  background: var(--tg-theme-bg-color);
+  border-radius: 24px 24px 0 0;
+  overflow: hidden;
+  animation: slideUp 0.3s ease;
+}
+
+.install-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px;
+  border-bottom: 1px solid var(--border-color);
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.install-sheet-header button {
+  width: 32px; height: 32px;
+  border: none; border-radius: 50%;
+  background: var(--card-bg);
+  color: var(--tg-theme-text-color);
+  font-size: 16px; cursor: pointer;
+}
+
+.install-sheet-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.install-sheet-body p {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--tg-theme-text-color);
+}
+
+.install-sheet-body strong {
+  color: #a29bfe;
+}
+
+.install-sheet-body code {
+  display: inline-block;
+  background: var(--dark);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #a29bfe;
+  word-break: break-all;
+  margin-top: 4px;
+}
+
+.install-copy-btn {
+  width: 100%;
+  margin-top: 6px;
+}
+
 /* ── Responsive ───────────────────────────────────────────────────────────── */
 
 /* Очень маленькие экраны по высоте (складные, landscape) */
