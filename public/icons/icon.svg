@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1a1a2e"/>
+  <circle cx="256" cy="256" r="190" fill="#7c4dff" opacity="0.25"/>
+  <circle cx="256" cy="256" r="140" fill="#7c4dff" opacity="0.35"/>
+  <!-- Microphone body -->
+  <rect x="206" y="120" width="100" height="170" rx="50" fill="#a29bfe"/>
+  <!-- Microphone stand -->
+  <path d="M176 270 Q176 360 256 360 Q336 360 336 270" stroke="#a29bfe" stroke-width="18" fill="none" stroke-linecap="round"/>
+  <line x1="256" y1="360" x2="256" y2="400" stroke="#a29bfe" stroke-width="18" stroke-linecap="round"/>
+  <line x1="210" y1="400" x2="302" y2="400" stroke="#a29bfe" stroke-width="18" stroke-linecap="round"/>
+  <!-- Shine -->
+  <rect x="220" y="140" width="28" height="60" rx="14" fill="white" opacity="0.4"/>
+</svg>

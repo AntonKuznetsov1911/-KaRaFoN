@@ -1,0 +1,42 @@
+{
+  "name": "KaRaFoN — Онлайн Караоке",
+  "short_name": "KaRaFoN",
+  "description": "Пой под музыку один или с друзьями",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f0f23",
+  "theme_color": "#7c4dff",
+  "lang": "ru",
+  "categories": ["music", "entertainment"],
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Соло режим",
+      "short_name": "Соло",
+      "description": "Начать петь в одиночку",
+      "url": "./?solo=1",
+      "icons": [{"src": "icons/icon-192.png", "sizes": "192x192"}]
+    }
+  ]
+}

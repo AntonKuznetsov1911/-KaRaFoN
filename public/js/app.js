@@ -47,6 +47,9 @@ class KaraFonApp {
     // Инициализируем аудио менеджер
     this.audioManager = new AudioManager();
 
+    // Реагируем на подключение/отключение аудиоустройств (BT-колонка, наушники)
+    this.audioManager.onDeviceChange = (devices) => this.handleAudioDeviceChange(devices);
+
     // Инициализируем WebRTC (PeerJS, socket не нужен)
     this.webrtcManager = new WebRTCManager(null, this.audioManager);
     this.setupWebRTCCallbacks();
@@ -386,6 +389,8 @@ class KaraFonApp {
 
   /**
    * Инициализация аудио
+   * Вызывается при user gesture (клик), поэтому здесь безопасно разблокировать
+   * параллельное воспроизведение музыки.
    */
   async initAudio() {
     // Инициализируем аудио менеджер
@@ -395,10 +400,14 @@ class KaraFonApp {
       return false;
     }
 
-    // Запрашиваем доступ к микрофону
+    // ⚡ Разблокировка: говорим ОС что хотим работать ВМЕСТЕ с музыкой, не вместо неё.
+    // Должно вызываться во время user gesture (мы внутри обработчика клика).
+    await this.audioManager.unlockAudioMixing();
+
+    // Запрашиваем доступ к микрофону (с fallback-цепочкой для BT)
     const micAccess = await this.audioManager.requestMicrophoneAccess();
     if (!micAccess) {
-      this.showToast('Нет доступа к микрофону');
+      this.showToast('❌ Нет доступа к микрофону. Разреши его в настройках браузера.');
       return false;
     }
 
@@ -417,6 +426,42 @@ class KaraFonApp {
     });
 
     return true;
+  }
+
+  /**
+   * Реакция на изменение аудиоустройств
+   * Вызывается когда подключается или отключается BT-колонка / наушники
+   */
+  async handleAudioDeviceChange(devices) {
+    console.log('[App] Audio device change detected, devices:', devices);
+
+    // Обновляем селекторы устройств в настройках
+    this.updateDeviceSelectors();
+
+    // Если микрофон сейчас активен — показываем уведомление
+    if (this.isMicActive) {
+      this.showToast('🔌 Аудиоустройство изменено — перезапуск микрофона...');
+
+      // Небольшая пауза: ОС нужно время на переключение Bluetooth-профиля
+      await new Promise(r => setTimeout(r, 800));
+
+      // Перезапрашиваем микрофон с текущими настройками
+      // (fallback-цепочка сама выберет лучший вариант для нового устройства)
+      const ok = await this.audioManager.requestMicrophoneAccess();
+      if (ok) {
+        this.audioManager.setupAudioChain();
+        // Обновляем поток в WebRTC если в комнате
+        if (this.isInRoom) {
+          await this.webrtcManager.updateLocalStream();
+        }
+        this.showToast('✅ Микрофон переключён');
+      } else {
+        this.showToast('⚠️ Не удалось переключить микрофон — попробуй вручную');
+      }
+    } else {
+      // Микрофон не активен — просто тихо обновляем список
+      this.showToast('🔌 Аудиоустройство изменено');
+    }
   }
 
   /**

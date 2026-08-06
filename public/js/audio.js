@@ -74,6 +74,9 @@ class AudioManager {
       microphones: [],
       speakers: []
     };
+
+    // Callback: вызывается когда подключается/отключается аудиоустройство
+    this.onDeviceChange = null;
   }
 
   /**
@@ -103,9 +106,12 @@ class AudioManager {
       // Получаем список устройств
       await this.updateDeviceList();
 
-      // Слушаем изменения устройств
-      navigator.mediaDevices.addEventListener('devicechange', () => {
-        this.updateDeviceList();
+      // Слушаем изменения устройств (подключение/отключение BT-колонки, наушников и т.д.)
+      navigator.mediaDevices.addEventListener('devicechange', async () => {
+        await this.updateDeviceList();
+        if (this.onDeviceChange) {
+          this.onDeviceChange(this.devices);
+        }
       });
 
       this.isInitialized = true;
@@ -114,6 +120,61 @@ class AudioManager {
     } catch (error) {
       console.error('Failed to initialize AudioManager:', error);
       return false;
+    }
+  }
+
+  /**
+   * Разблокировать параллельное воспроизведение музыки
+   *
+   * Проблема: когда браузер активирует AudioContext + getUserMedia, он по умолчанию
+   * запрашивает у ОС эксклюзивный аудио-фокус → Spotify/YouTube паузируются.
+   *
+   * Решения:
+   * 1. navigator.audioSession API (Chrome 120+, Safari 17.4+) — явно говорим ОС,
+   *    что мы хотим смешиваться с другим аудио (playback: ambient).
+   * 2. Тихий буфер (iOS trick) — воспроизводим 1 сэмпл тишины при user gesture.
+   *    Это принуждает iOS Safari перейти в AVAudioSession.Category.playAndRecord
+   *    с опцией .mixWithOthers вместо эксклюзивного режима.
+   *
+   * ВАЖНО: вызывать ТОЛЬКО во время user gesture (клик кнопки).
+   */
+  async unlockAudioMixing() {
+    // ── 1. Web AudioSession API (экспериментальный, не везде работает) ──
+    if ('audioSession' in navigator) {
+      try {
+        // 'play-and-record' = пишем микрофон + выводим звук, но не прерываем других
+        // На iOS это открывает путь к AVAudioSessionCategoryPlayAndRecord+mixWithOthers
+        navigator.audioSession.type = 'play-and-record';
+        console.log('[Audio] navigator.audioSession.type = play-and-record');
+      } catch (e) {
+        console.warn('[Audio] navigator.audioSession failed:', e.message);
+      }
+    }
+
+    // ── 2. Тихий буфер (iOS/Android trick) ──
+    // Воспроизводим 1 сэмпл тишины через AudioContext во время user gesture.
+    // На iOS это активирует аудио сессию в режиме совместного использования.
+    if (!this.audioContext) return;
+
+    try {
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+
+      const silentBuf = this.audioContext.createBuffer(1, 1, this.audioContext.sampleRate);
+      const src = this.audioContext.createBufferSource();
+      src.buffer = silentBuf;
+
+      // Соединяем через gain=0 — тихо, но AudioContext активирован
+      const muteGain = this.audioContext.createGain();
+      muteGain.gain.value = 0;
+      src.connect(muteGain);
+      muteGain.connect(this.audioContext.destination);
+      src.start(0);
+
+      console.log('[Audio] Silent buffer played — audio mixing unlocked');
+    } catch (e) {
+      console.warn('[Audio] Silent buffer unlock failed:', e.message);
     }
   }
 
