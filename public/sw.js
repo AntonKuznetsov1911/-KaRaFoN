@@ -8,7 +8,7 @@
  * - Установку на рабочий стол как PWA
  */
 
-const CACHE_NAME = 'karafon-v2';
+const CACHE_NAME = 'karafon-v4'; // Bumped → принудительно сбрасываем старый кэш с иконками
 
 // Локальные файлы — кэшируем всегда
 const LOCAL_ASSETS = [
