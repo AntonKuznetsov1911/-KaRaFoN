@@ -34,7 +34,7 @@ class AudioManager {
     // Настройки качества звука
     this.audioEnhancement = true;
     this.noiseGateEnabled = true;
-    this.noiseGateThreshold = -50; // dB (было -45, понижено для быстрой реакции)
+    this.noiseGateThreshold = -45; // dB — оптимальный порог для голоса
     this.deEsserEnabled = true;
     this.presenceEnabled = true;
     this.warmthEnabled = false;
@@ -64,7 +64,7 @@ class AudioManager {
     // Noise Gate состояние
     this.noiseGateOpen = false;
     this.noiseGateAnimationId = null;
-    this.noiseGateThreshold = -50; // Понижен с -45 → реагирует быстрее, меньше "срезает" начало слов
+    // noiseGateThreshold задаётся выше в секции настроек (не дублируем)
 
     // Уровень сигнала для индикатора
     this.currentLevel = 0;
@@ -91,11 +91,12 @@ class AudioManager {
       // iOS/Safari требует особой обработки
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 
-      // latencyHint: 0 — запрашиваем абсолютный минимум буфера у ОС.
-      // 'interactive' даёт ~10-20ms на Android, 0 — обычно 5-10ms.
+      // latencyHint: 'interactive' — оптимальный баланс задержки и стабильности.
+      // latencyHint: 0 давал чуть меньше буфер (~5-10ms vs ~10-20ms), но
+      // нестабильную работу anti-feedback фильтров → свист.
       // sampleRate не указываем: браузер использует native rate железа,
       // что исключает пересэмплирование и его задержку.
-      this.audioContext = new AudioContextClass({ latencyHint: 0 });
+      this.audioContext = new AudioContextClass({ latencyHint: 'interactive' });
 
       // iOS: AudioContext создаётся в suspended состоянии, нужно resume
       if (this.audioContext.state === 'suspended') {
@@ -335,12 +336,10 @@ class AudioManager {
     // Создаём источник
     this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-    // Точка нулевой задержки для мониторинга — подключается ПРЯМО от источника,
-    // ДО компрессоров и лимитера. Это убирает ~12ms дополнительной задержки
-    // из DynamicsCompressor lookahead при прослушивании своего голоса.
-    this.monitorInsertNode = this.audioContext.createGain();
-    this.monitorInsertNode.gain.value = 1.0;
-    this.sourceNode.connect(this.monitorInsertNode);
+    // monitorInsertNode создаётся ПОСЛЕ anti-feedback фильтров (см. ниже).
+    // Если подключить ДО фильтров — мониторинг идёт напрямую из mic → speaker
+    // без notch-фильтрации → петля обратной связи → свист.
+    this.monitorInsertNode = null;
 
     // === УЛУЧШЕНИЕ КАЧЕСТВА ЗВУКА ===
 
@@ -402,7 +401,7 @@ class AudioManager {
         const notch = this.audioContext.createBiquadFilter();
         notch.type = 'notch';
         notch.frequency.value = freq;
-        notch.Q.value = 30; // Узкая полоса
+        notch.Q.value = 50; // Более агрессивное подавление (было 30)
         this.antiFeedbackFilters.push(notch);
       });
     }
@@ -455,6 +454,15 @@ class AudioManager {
         });
       }
 
+      // Точка мониторинга — подключается ПОСЛЕ anti-feedback фильтров.
+      // КРИТИЧЕСКИ: НЕ ДО фильтров! Если тапать до notch-фильтров, мониторинг
+      // создаёт прямой путь mic → speaker без защиты от обратной связи → свист.
+      // После фильтров: mic → notch[800,1600,3200,4000,6300] → monitorInsertNode → speaker
+      // Notch фильтры гасят частоты свиста ДО того как звук попадёт в динамик.
+      this.monitorInsertNode = this.audioContext.createGain();
+      this.monitorInsertNode.gain.value = 1.0;
+      currentNode.connect(this.monitorInsertNode); // боковой отвод (параллельно компрессору)
+
       // Компрессор -> Noise Gate -> Gain -> Limiter -> Analyser
       // КРИТИЧЕСКИ: Убрали delay из цепочки для минимальной задержки!
       // Delay используется только если пользователь явно установил компенсацию
@@ -484,6 +492,13 @@ class AudioManager {
     } else {
       // Простая цепочка без обработки - МИНИМАЛЬНАЯ ЗАДЕРЖКА
       this.sourceNode.connect(this.gainNode);
+
+      // В режиме без обработки нет anti-feedback фильтров, поэтому:
+      // - мониторинг через наушники — всё равно тапаем от источника
+      // - если нет наушников и есть колонки — рекомендуется не включать мониторинг
+      this.monitorInsertNode = this.audioContext.createGain();
+      this.monitorInsertNode.gain.value = 1.0;
+      this.sourceNode.connect(this.monitorInsertNode);
 
       // Delay только если явно установлен > 0
       if (this.delayTime > 0) {
@@ -844,11 +859,12 @@ class AudioManager {
 
   /**
    * Включить/выключить мониторинг
-   * ВНИМАНИЕ: Может вызвать feedback! Используйте наушники
+   * ВНИМАНИЕ: С колонками может вызвать feedback — используйте наушники!
    *
-   * Мониторинг подключается к monitorInsertNode — точке ПЕРЕД компрессорами
-   * и лимитером. Это убирает ~12ms задержки DynamicsCompressor lookahead,
-   * которая была бы слышна при мониторинге своего голоса через наушники.
+   * Мониторинг подключается к monitorInsertNode — точке ПОСЛЕ anti-feedback
+   * notch-фильтров, но ДО компрессора. Это даёт:
+   * - Защиту от свиста (notch-фильтры уже обработали сигнал)
+   * - Минимальную задержку (нет компрессора lookahead ~12ms на пути)
    */
   enableMonitoring(enabled) {
     if (!this.audioContext) return;
@@ -864,7 +880,9 @@ class AudioManager {
       // Создаём gain для мониторинга с пониженной громкостью
       if (!this.monitorGainNode) {
         this.monitorGainNode = this.audioContext.createGain();
-        this.monitorGainNode.gain.value = 0.3; // Снижаем для предотвращения feedback
+        // 0.15 (−16 dB) — достаточно чтобы слышать себя, но не создавать петлю обратной связи.
+        // Раньше 0.3 было слишком громко и усиливало любой остаточный feedback.
+        this.monitorGainNode.gain.value = 0.15;
       }
 
       monitorSource.connect(this.monitorGainNode);
