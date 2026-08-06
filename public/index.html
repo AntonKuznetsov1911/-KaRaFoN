@@ -196,8 +196,8 @@
             <p class="setting-hint">Глушит микрофон когда не поёшь (убирает фоновый шум)</p>
             <div class="slider-group">
               <label>Чувствительность</label>
-              <input type="range" id="noise-gate-threshold" min="-60" max="-20" value="-45">
-              <span id="noise-gate-value">-45 дБ</span>
+              <input type="range" id="noise-gate-threshold" min="-60" max="-20" value="-50">
+              <span id="noise-gate-value">-50 дБ</span>
               <button class="btn-calibrate" id="btn-calibrate">Автокалибровка</button>
             </div>
           </div>
@@ -221,12 +221,22 @@
 
           <!-- Задержка для синхронизации -->
           <div class="setting-group">
-            <label>⏱️ Задержка (синхронизация)</label>
-            <p class="setting-hint">Компенсация задержки Bluetooth колонки</p>
+            <label>⏱️ Компенсация задержки BT-колонки</label>
+            <p class="setting-hint">Bluetooth A2DP добавляет 150–300 мс задержки — это норма железа, не программы. Используй этот слайдер только для <strong>синхронизации видео</strong>, не для уменьшения задержки.</p>
             <div class="slider-group">
               <input type="range" id="delay-compensation" min="0" max="500" value="0">
               <span id="delay-compensation-value">0 мс</span>
             </div>
+          </div>
+
+          <!-- Задержка системы -->
+          <div class="setting-group">
+            <label>⚡ Задержка аудросистемы</label>
+            <div class="latency-row">
+              <div class="latency-chip" id="latency-chip">— мс</div>
+              <p class="latency-desc" id="latency-desc">Открой настройки во время пения чтобы измерить</p>
+            </div>
+            <p class="setting-hint">Минимально возможная задержка Web Audio на вашем устройстве. Зависит от железа — обычно 5–20 мс на Android, 10–30 мс на iOS.</p>
           </div>
 
           <!-- Дополнительные фильтры -->

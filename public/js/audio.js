@@ -34,7 +34,7 @@ class AudioManager {
     // Настройки качества звука
     this.audioEnhancement = true;
     this.noiseGateEnabled = true;
-    this.noiseGateThreshold = -45; // dB
+    this.noiseGateThreshold = -50; // dB (было -45, понижено для быстрой реакции)
     this.deEsserEnabled = true;
     this.presenceEnabled = true;
     this.warmthEnabled = false;
@@ -64,6 +64,7 @@ class AudioManager {
     // Noise Gate состояние
     this.noiseGateOpen = false;
     this.noiseGateAnimationId = null;
+    this.noiseGateThreshold = -50; // Понижен с -45 → реагирует быстрее, меньше "срезает" начало слов
 
     // Уровень сигнала для индикатора
     this.currentLevel = 0;
@@ -90,18 +91,24 @@ class AudioManager {
       // iOS/Safari требует особой обработки
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 
-      // Не указываем sampleRate для iOS совместимости - система выберет сама
-      this.audioContext = new AudioContextClass({
-        latencyHint: 'interactive'  // Лучше работает на iOS чем 'playback'
-      });
+      // latencyHint: 0 — запрашиваем абсолютный минимум буфера у ОС.
+      // 'interactive' даёт ~10-20ms на Android, 0 — обычно 5-10ms.
+      // sampleRate не указываем: браузер использует native rate железа,
+      // что исключает пересэмплирование и его задержку.
+      this.audioContext = new AudioContextClass({ latencyHint: 0 });
 
       // iOS: AudioContext создаётся в suspended состоянии, нужно resume
       if (this.audioContext.state === 'suspended') {
         console.log('AudioContext suspended, will resume on user interaction');
       }
 
-      console.log('AudioContext created, state:', this.audioContext.state,
-                  'base latency:', (this.audioContext.baseLatency || 0) * 1000, 'ms, sample rate:', this.audioContext.sampleRate);
+      const baseMs  = ((this.audioContext.baseLatency   || 0) * 1000).toFixed(1);
+      const outMs   = ((this.audioContext.outputLatency || 0) * 1000).toFixed(1);
+      const totalMs = (parseFloat(baseMs) + parseFloat(outMs)).toFixed(1);
+      console.log(`AudioContext ready | base: ${baseMs}ms | output: ${outMs}ms | total: ${totalMs}ms | rate: ${this.audioContext.sampleRate}Hz`);
+
+      // Сохраняем для отображения в настройках
+      this._audioLatencyMs = totalMs;
 
       // Получаем список устройств
       await this.updateDeviceList();
@@ -685,14 +692,17 @@ class AudioManager {
       // Открываем/закрываем gate
       const targetGain = db > this.noiseGateThreshold ? 1 : 0;
 
-      // Плавное изменение (10ms attack, 100ms release)
+      // Attack: 1ms — мгновенное открытие, убирает ощущение «задержки» в начале слов.
+      // Раньше 10ms давали слышимое срезание первого звука каждого слова,
+      // что воспринималось как «задержка голоса».
+      // Release: 80ms — достаточно плавно чтобы нет кликов, но не «тянет» хвост.
       const currentTime = this.audioContext.currentTime;
       if (targetGain > this.noiseGateGain.gain.value) {
-        // Attack - быстро открываем
-        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.01);
+        // Attack — мгновенно открываем (1ms)
+        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.001);
       } else {
-        // Release - плавно закрываем
-        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.1);
+        // Release — быстро закрываем (80ms)
+        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.08);
       }
 
       this.noiseGateOpen = targetGain > 0.5;

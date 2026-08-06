@@ -1026,6 +1026,37 @@ body {
   animation: pulse 0.5s ease-in-out infinite;
 }
 
+/* ── Latency Display ─────────────────────────────────────────────────────── */
+.latency-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.latency-chip {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 18px;
+  font-weight: 700;
+  font-family: monospace;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.latency-chip.good { background: rgba(0,184,148,0.2); border-color: #00b894; color: #00b894; }
+.latency-chip.ok   { background: rgba(253,203,110,0.2); border-color: #fdcb6e; color: #fdcb6e; }
+.latency-chip.slow { background: rgba(214,48,49,0.2); border-color: #d63031; color: #ff7675; }
+
+.latency-desc {
+  font-size: 13px;
+  color: var(--tg-theme-hint-color);
+  line-height: 1.4;
+}
+
 /* ── PWA Install Overlay ──────────────────────────────────────────────────── */
 #install-overlay {
   position: fixed;

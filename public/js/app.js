@@ -144,7 +144,10 @@ class KaraFonApp {
 
     // Экран караоке
     document.getElementById('btn-back').addEventListener('click', () => this.handleBack());
-    document.getElementById('btn-settings').addEventListener('click', () => this.showModal('settings'));
+    document.getElementById('btn-settings').addEventListener('click', () => {
+      this.showModal('settings');
+      this.updateLatencyDisplay();
+    });
     document.getElementById('mic-status').addEventListener('click', () => this.toggleMic());
     document.getElementById('btn-mic-toggle').addEventListener('click', () => this.toggleMic());
     document.getElementById('btn-monitor').addEventListener('click', () => this.toggleMonitoring());
@@ -823,6 +826,29 @@ class KaraFonApp {
     setTimeout(() => {
       toast.remove();
     }, 3000);
+  }
+
+  /**
+   * Показать актуальную задержку аудиосистемы в настройках
+   */
+  updateLatencyDisplay() {
+    const chip = document.getElementById('latency-chip');
+    const desc = document.getElementById('latency-desc');
+    if (!chip || !this.audioManager?.audioContext) return;
+
+    const ctx = this.audioManager.audioContext;
+    const baseMs  = ((ctx.baseLatency   || 0) * 1000);
+    const outMs   = ((ctx.outputLatency || 0) * 1000);
+    const total   = baseMs + outMs;
+
+    chip.textContent = `${total.toFixed(1)} мс`;
+    chip.className   = 'latency-chip ' + (total < 15 ? 'good' : total < 30 ? 'ok' : 'slow');
+
+    if (desc) {
+      if (total < 15)      desc.textContent = '✅ Отлично — практически незаметная задержка';
+      else if (total < 30) desc.textContent = '🟡 Приемлемо — слабо слышна при мониторинге';
+      else                 desc.textContent = '🔴 Высокая — типично для iOS или старых Android';
+    }
   }
 
   /**
