@@ -184,8 +184,8 @@ class KaraFonApp {
       const enabled = e.target.checked;
       this.audioManager?.setBluetoothMode(enabled);
       document.getElementById('bluetooth-label').textContent = enabled
-        ? 'Включён (рекомендуется для колонок)'
-        : 'Выключен';
+        ? 'Включён (звук из BT-колонки)'
+        : 'Выключен (для наушников/гарнитуры)';
     });
 
     // Улучшение звука

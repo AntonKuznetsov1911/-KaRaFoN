@@ -26,9 +26,10 @@ class AudioManager {
     this.currentEffect = 'none';
     this.volume = 0.5; // Снижена с 1.0 для предотвращения feedback
 
-    // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль
-    // По умолчанию ВЫКЛЮЧЕН: echoCancellation работает, нет эхо в комнатном режиме
-    this.bluetoothMode = false;
+    // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль.
+    // По умолчанию ВКЛЮЧЁН: колонка остаётся в A2DP (стерео), динамик телефона не используется.
+    // Выключить нужно только при использовании наушников/гарнитуры в режиме комнаты.
+    this.bluetoothMode = true;
 
     // Настройки качества звука
     this.audioEnhancement = true;
@@ -157,23 +158,28 @@ class AudioManager {
         console.log('AudioContext resumed, state:', this.audioContext.state);
       }
 
-      // В режиме Bluetooth отключаем ВСЮ обработку аудио
-      // Это предотвращает переключение Bluetooth профиля с A2DP на HFP
+      // Bluetooth режим: echoCancellation: false → Bluetooth остаётся в A2DP профиле.
+      // Звук идёт из Bluetooth-колонки, голос — через встроенный микрофон телефона.
+      //
+      // Обычный режим (OFF): echoCancellation как предпочтение (не exact!).
+      // exact: true принудительно переключало бы Bluetooth на HFP,
+      // из-за чего колонка без микрофона не могла принять сигнал и Android
+      // переходил на динамик телефона. Используем ideal для мягкого запроса.
       const constraints = {
         audio: this.bluetoothMode ? {
-          // Bluetooth режим - минимальные требования
+          // Bluetooth режим — A2DP: звук из колонки, голос с микрофона телефона
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          // Не указываем sampleRate и channelCount - пусть система выберет
           ...(deviceId && { deviceId: { exact: deviceId } })
         } : {
-          // Обычный режим с АГРЕССИВНОЙ обработкой для подавления помех
-          echoCancellation: { ideal: true, exact: true },
-          noiseSuppression: { ideal: true, exact: true },
+          // Обычный режим (наушники / гарнитура / комнатный режим без BT-колонки)
+          // ideal — предпочтение, но не принудительно; не ломает Bluetooth A2DP
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
           autoGainControl: { ideal: true },
           sampleRate: { ideal: 48000 },
-          channelCount: { ideal: 1 }, // Моно для меньших помех
+          channelCount: { ideal: 1 },
           ...(deviceId && { deviceId: { exact: deviceId } })
         }
       };
