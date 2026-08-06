@@ -147,34 +147,62 @@ class AudioManager {
 
   /**
    * Запросить доступ к микрофону
+   *
+   * Использует цепочку попыток (fallback chain) для совместимости с Bluetooth:
+   * 1. Предпочтительные ограничения (A2DP-friendly или с EC)
+   * 2. Мягкие ограничения (ideal вместо hard constraints)
+   * 3. Минимальные ограничения (audio: true) — работает всегда
+   *
+   * Проблема: на Android при подключённой BT-колонке некоторые версии Chrome
+   * блокируют getUserMedia с echoCancellation: false, потому что Android
+   * пытается активировать HFP для микрофона, а колонка без микрофона его не
+   * поддерживает → браузер получает отказ от ОС → тихо падает.
    */
   async requestMicrophoneAccess(deviceId = null) {
-    try {
-      // iOS: Обязательно resume AudioContext перед getUserMedia
-      // Это должно происходить после user interaction (клик на кнопку)
-      if (this.audioContext && this.audioContext.state === 'suspended') {
-        console.log('Resuming AudioContext before microphone access...');
-        await this.audioContext.resume();
-        console.log('AudioContext resumed, state:', this.audioContext.state);
-      }
+    // iOS: Обязательно resume AudioContext перед getUserMedia
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      console.log('Resuming AudioContext before microphone access...');
+      await this.audioContext.resume();
+      console.log('AudioContext resumed, state:', this.audioContext.state);
+    }
 
-      // Bluetooth режим: echoCancellation: false → Bluetooth остаётся в A2DP профиле.
-      // Звук идёт из Bluetooth-колонки, голос — через встроенный микрофон телефона.
-      //
-      // Обычный режим (OFF): echoCancellation как предпочтение (не exact!).
-      // exact: true принудительно переключало бы Bluetooth на HFP,
-      // из-за чего колонка без микрофона не могла принять сигнал и Android
-      // переходил на динамик телефона. Используем ideal для мягкого запроса.
-      const constraints = {
-        audio: this.bluetoothMode ? {
-          // Bluetooth режим — A2DP: звук из колонки, голос с микрофона телефона
+    // Цепочка попыток от строгих ограничений к минимальным
+    const attempts = this.bluetoothMode ? [
+      // Попытка 1: Идеальный Bluetooth режим (A2DP) — отключаем EC полностью
+      // Звук из BT-колонки (A2DP), голос через встроенный микрофон телефона.
+      // Может упасть на Android если ОС требует HFP для mic при активном BT.
+      {
+        label: 'BT A2DP (no EC)',
+        audio: {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
           ...(deviceId && { deviceId: { exact: deviceId } })
-        } : {
-          // Обычный режим (наушники / гарнитура / комнатный режим без BT-колонки)
-          // ideal — предпочтение, но не принудительно; не ломает Bluetooth A2DP
+        }
+      },
+      // Попытка 2: Мягкое предпочтение — ideal вместо hard false.
+      // Даём Android свободу выбора профиля, предпочитаем без EC.
+      {
+        label: 'BT soft (ideal no EC)',
+        audio: {
+          echoCancellation: { ideal: false },
+          noiseSuppression: { ideal: false },
+          autoGainControl: { ideal: false },
+          ...(deviceId && { deviceId: { ideal: deviceId } })
+        }
+      },
+      // Попытка 3: Минимальные ограничения — пусть ОС решает сама.
+      // Гарантированно работает, но может переключить BT на HFP.
+      {
+        label: 'minimal (audio:true)',
+        audio: true
+      }
+    ] : [
+      // Обычный режим (наушники / гарнитура / без BT-колонки)
+      // ideal — предпочтение, но не принудительно; не ломает Bluetooth A2DP
+      {
+        label: 'standard (ideal EC)',
+        audio: {
           echoCancellation: { ideal: true },
           noiseSuppression: { ideal: true },
           autoGainControl: { ideal: true },
@@ -182,21 +210,41 @@ class AudioManager {
           channelCount: { ideal: 1 },
           ...(deviceId && { deviceId: { exact: deviceId } })
         }
-      };
+      },
+      // Fallback для обычного режима
+      {
+        label: 'minimal (audio:true)',
+        audio: true
+      }
+    ];
 
-      console.log('Requesting microphone with constraints:', constraints);
+    for (const attempt of attempts) {
+      try {
+        console.log(`Requesting microphone [${attempt.label}]...`);
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: attempt.audio });
 
-      this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        // Обновляем список устройств после получения разрешения
+        await this.updateDeviceList();
 
-      // Обновляем список устройств после получения разрешения
-      await this.updateDeviceList();
+        const track = this.mediaStream.getAudioTracks()[0];
+        const settings = track?.getSettings?.() || {};
+        console.log(`✅ Microphone granted [${attempt.label}]`, {
+          echoCancellation: settings.echoCancellation,
+          deviceId: settings.deviceId?.substring(0, 8)
+        });
 
-      console.log('Microphone access granted, Bluetooth mode:', this.bluetoothMode);
-      return true;
-    } catch (error) {
-      console.error('Microphone access denied:', error);
-      return false;
+        // Сохраняем, какая попытка сработала (для диагностики)
+        this.lastMicAttemptLabel = attempt.label;
+        return true;
+      } catch (err) {
+        console.warn(`❌ Attempt [${attempt.label}] failed: ${err.name} — ${err.message}`);
+        // Продолжаем к следующей попытке
+      }
     }
+
+    // Все попытки провалились
+    console.error('Microphone access denied after all fallback attempts');
+    return false;
   }
 
   /**
