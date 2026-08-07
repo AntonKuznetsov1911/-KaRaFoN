@@ -361,13 +361,81 @@
   <script src="js/webrtc.js"></script>
   <script src="js/app.js"></script>
 
-  <!-- ── Service Worker Registration ── -->
+  <!-- ── Service Worker + Auto-Update ── -->
   <script>
     if ('serviceWorker' in navigator) {
+      // Запоминаем: был ли SW уже активен ДО загрузки страницы.
+      // Если нет — это первая установка, перезагрузка не нужна.
+      const hadController = !!navigator.serviceWorker.controller;
+
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js')
-          .then(reg => console.log('[SW] Registered, scope:', reg.scope))
+          .then(reg => {
+            console.log('[SW] Registered, scope:', reg.scope);
+
+            // Запускаем проверку обновлений сразу и каждые 60 минут
+            reg.update();
+            setInterval(() => reg.update(), 60 * 60 * 1000);
+          })
           .catch(err => console.warn('[SW] Registration failed:', err));
+      });
+
+      // ── Обработка обновления ────────────────────────────────────────────────
+      // SW посылает SW_UPDATED сразу после clients.claim() в activate-хэндлере.
+      // Дополнительно ловим controllerchange — срабатывает когда новый SW
+      // берёт управление страницей (после skipWaiting + clients.claim).
+      let updatePending = false;
+
+      function applyUpdate() {
+        if (updatePending) return;
+        updatePending = true;
+
+        const isInKaraoke = window.app?.currentScreen === 'karaoke';
+
+        if (isInKaraoke) {
+          // Пользователь поёт — не ломаем сессию, показываем кнопку
+          const banner = document.createElement('div');
+          banner.id = 'update-banner';
+          banner.style.cssText = [
+            'position:fixed;top:0;left:0;right:0;z-index:9999',
+            'background:#6c5ce7;color:#fff',
+            'display:flex;align-items:center;justify-content:center;gap:12px',
+            'padding:12px 16px;font-size:14px;font-weight:500'
+          ].join(';');
+          banner.innerHTML =
+            '🔄 Доступно обновление KaRaFoN' +
+            '<button onclick="location.reload()" style="' +
+              'padding:6px 14px;border:none;border-radius:8px;' +
+              'background:#fff;color:#6c5ce7;font-weight:700;cursor:pointer' +
+            '">Обновить</button>' +
+            '<button onclick="this.parentElement.remove()" style="' +
+              'padding:6px 10px;border:none;border-radius:8px;' +
+              'background:rgba(255,255,255,0.2);color:#fff;cursor:pointer' +
+            '">✕</button>';
+          document.body.appendChild(banner);
+        } else {
+          // На главном экране — тихо перезагружаемся
+          if (window.app?.showToast) {
+            window.app.showToast('🔄 Установлено обновление...');
+          }
+          setTimeout(() => location.reload(), 1200);
+        }
+      }
+
+      // Способ 1: SW сам сообщает что активирован
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data?.type === 'SW_UPDATED' && hadController) {
+          console.log('[SW] Update message received');
+          applyUpdate();
+        }
+      });
+
+      // Способ 2: Детектируем смену контроллера (резервный путь)
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController) {
+          console.log('[SW] Controller changed — update detected');
+          applyUpdate();
+        }
       });
     }
   </script>

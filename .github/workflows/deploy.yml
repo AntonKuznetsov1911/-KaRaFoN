@@ -17,6 +17,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Stamp SW cache version
+        # Автоматически заменяем karafon-vN на karafon-v<unix_timestamp>.
+        # Это гарантирует что каждый деплой — новая версия кэша.
+        # Разработчику НЕ нужно вручную менять CACHE_NAME в sw.js.
+        run: |
+          VERSION=$(date +%s)
+          sed -i "s/karafon-v[0-9]*/karafon-v${VERSION}/g" public/sw.js
+          echo "SW cache version stamped: karafon-v${VERSION}"
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:

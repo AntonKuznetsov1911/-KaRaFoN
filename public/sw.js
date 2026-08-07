@@ -52,6 +52,14 @@ self.addEventListener('activate', (event) => {
           })
       ))
       .then(() => self.clients.claim()) // Берём контроль над всеми вкладками
+      .then(() => {
+        // Сообщаем всем открытым вкладкам: новая версия активна.
+        // Страница отловит это и предложит (или выполнит) перезагрузку.
+        return self.clients.matchAll({ type: 'window' }).then(clients => {
+          clients.forEach(client => client.postMessage({ type: 'SW_UPDATED' }));
+          console.log(`[SW] Notified ${clients.length} client(s) about update`);
+        });
+      })
   );
 });
 
