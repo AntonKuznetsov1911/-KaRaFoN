@@ -78,6 +78,10 @@ class AudioManager {
 
     // Callback: вызывается когда подключается/отключается аудиоустройство
     this.onDeviceChange = null;
+
+    // MediaStreamDestination для WebRTC — обработанный поток (EQ + компрессор + эффекты)
+    // пересоздаётся при каждом setupAudioChain(), на iOS заменяется raw-потоком
+    this._webrtcDest = null;
   }
 
   /**
@@ -487,6 +491,12 @@ class AudioManager {
       }
       this.limiter.connect(this.analyserNode);
 
+      // Обработанный поток для WebRTC — друзья слышат голос с EQ, компрессором, NG и эффектами.
+      // analyserNode — финальная точка после всех эффектов (см. applyEffect).
+      // iOS Safari: createMediaStreamDestination() нестабилен в WebRTC → getOutputStream() использует fallback.
+      this._webrtcDest = this.audioContext.createMediaStreamDestination();
+      this.analyserNode.connect(this._webrtcDest);
+
       // Запускаем Noise Gate если включен
       if (this.noiseGateEnabled) {
         this.startNoiseGate();
@@ -514,6 +524,10 @@ class AudioManager {
       } else {
         this.gainNode.connect(this.analyserNode);
       }
+
+      // Обработанный поток для WebRTC (в режиме без обработки — только gainNode)
+      this._webrtcDest = this.audioContext.createMediaStreamDestination();
+      this.analyserNode.connect(this._webrtcDest);
 
       this.startLevelMeter();
       console.log('Audio chain without enhancement setup (zero latency)');
@@ -841,6 +855,16 @@ class AudioManager {
         highpass: 80, lowpass: 12000,
         deesser: -4, presence: 4, warmth: 3,
         compThreshold: -20, compRatio: 5
+      },
+      // Пресет для пения под музыку:
+      // • highpass 120 Гц — агрессивно срезает бас-гул и дыхание в микрофон
+      // • presence +6 дБ — голос отчётливо слышен поверх фонограммы
+      // • deesser -5 дБ — сибилянты не режут уши через колонку
+      // • ratio 5 — плотная компрессия выравнивает пение на разной громкости
+      karaoke: {
+        highpass: 120, lowpass: 13000,
+        deesser: -5, presence: 6, warmth: 1,
+        compThreshold: -20, compRatio: 5
       }
     };
 
@@ -972,7 +996,14 @@ class AudioManager {
   }
 
   /**
-   * Эффект реверберации (концертный зал)
+   * Эффект реверберации — концертный зал
+   *
+   * Реалистичный импульсный отклик:
+   *  • Pre-delay 28 мс — время до первых отражений от стен зала
+   *  • RT60 = 1.6 с — время затухания до -60 dB (концертный зал среднего размера)
+   *  • HF rolloff — воздух поглощает высокие частоты быстрее низких, отчего
+   *    хвост реверба становится тёплым, а не «металлическим»
+   *  • Stereo decorrelation — L/R немного различаются → пространственность
    */
   createReverbEffect(inputNode) {
     const convolver = this.audioContext.createConvolver();
@@ -980,22 +1011,45 @@ class AudioManager {
     const dryGain = this.audioContext.createGain();
     const output = this.audioContext.createGain();
 
-    // Генерируем импульсный отклик
     const sampleRate = this.audioContext.sampleRate;
-    const length = sampleRate * 2; // 2 секунды
-    const impulse = this.audioContext.createBuffer(2, length, sampleRate);
+    const preDelayMs  = 28;    // мс до первого отражения
+    const rt60        = 1.6;   // время затухания в секундах
+    const preDelaySamples = Math.floor(sampleRate * preDelayMs / 1000);
+    const totalSamples    = Math.floor(sampleRate * (preDelayMs / 1000 + rt60 + 0.1));
 
-    for (let channel = 0; channel < 2; channel++) {
-      const channelData = impulse.getChannelData(channel);
-      for (let i = 0; i < length; i++) {
-        channelData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2);
+    const impulse = this.audioContext.createBuffer(2, totalSamples, sampleRate);
+
+    for (let ch = 0; ch < 2; ch++) {
+      const buf = impulse.getChannelData(ch);
+
+      for (let i = 0; i < totalSamples; i++) {
+        if (i < preDelaySamples) {
+          buf[i] = 0; // тишина во время pre-delay
+          continue;
+        }
+
+        const t = (i - preDelaySamples) / sampleRate;
+
+        // Экспоненциальный спад: gain = exp(-ln(10^6) / RT60 * t) = exp(-13.8 / RT60 * t)
+        const decay = Math.exp(-13.8 * t / rt60);
+
+        // HF rolloff: высокочастотная составляющая затухает в 4× быстрее
+        // Это придаёт тёплый «деревянный» характер вместо металлического хвоста
+        const hfDecay = Math.exp(-13.8 * t / (rt60 * 0.25));
+
+        // Стерео-декорреляция: L немного сдвинут относительно R → пространственность
+        const decorr = (ch === 0) ? 1.0 : (i % 7 < 3 ? 1.05 : 0.95);
+
+        buf[i] = (Math.random() * 2 - 1) * decorr * decay * (0.55 + 0.45 * hfDecay);
       }
     }
 
     convolver.buffer = impulse;
 
-    wetGain.gain.value = 0.4;
-    dryGain.gain.value = 0.8;
+    // dry 0.65 + wet 0.45 = naturalный баланс «концертного зала»
+    // (не подавляет сухой сигнал, но зал слышен)
+    dryGain.gain.value = 0.65;
+    wetGain.gain.value = 0.45;
 
     inputNode.connect(dryGain);
     inputNode.connect(convolver);
@@ -1270,26 +1324,33 @@ class AudioManager {
     });
 
     this.antiFeedbackFilters = [];
+
+    // WebRTC destination — зануляем, пересоздаётся в setupAudioChain()
+    if (this._webrtcDest) {
+      try { this._webrtcDest.disconnect(); } catch(e) {}
+      this._webrtcDest = null;
+    }
   }
 
   /**
    * Получить поток для WebRTC
-   * ВАЖНО: Возвращаем оригинальный mediaStream для лучшей совместимости с iPhone/Safari
+   *
+   * На Android/Desktop возвращаем обработанный поток из _webrtcDest:
+   *   друзья слышат голос с EQ, компрессором, noise gate и выбранным эффектом.
+   * На iOS Safari возвращаем оригинальный поток:
+   *   createMediaStreamDestination() нестабилен в WebRTC-соединениях на iOS.
    */
   getOutputStream() {
-    // Возвращаем оригинальный поток с микрофона
-    // Это работает лучше для WebRTC, особенно на iOS
-    if (this.mediaStream) {
-      console.log('Returning original mediaStream for WebRTC');
-      return this.mediaStream;
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+    if (this._webrtcDest && !isIOS) {
+      console.log('Returning processed stream for WebRTC (EQ + compressor + effects)');
+      return this._webrtcDest.stream;
     }
 
-    // Fallback: если нужен обработанный поток (не рекомендуется для WebRTC)
-    if (this.audioContext && this.analyserNode) {
-      console.warn('Using processed stream for WebRTC - may cause issues on iOS');
-      const destination = this.audioContext.createMediaStreamDestination();
-      this.analyserNode.connect(destination);
-      return destination.stream;
+    if (this.mediaStream) {
+      console.log('Returning raw mediaStream for WebRTC' + (isIOS ? ' (iOS fallback)' : ''));
+      return this.mediaStream;
     }
 
     return null;

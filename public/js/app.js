@@ -354,6 +354,11 @@ class KaraFonApp {
         this.tg.BackButton.hide();
       }
     }
+
+    // Показываем задержку в шапке при входе на экран пения
+    if (screenId === 'karaoke') {
+      this.updateLatencyDisplay();
+    }
   }
 
   /**
@@ -596,35 +601,79 @@ class KaraFonApp {
   /**
    * Переключить мониторинг
    */
-  toggleMonitoring() {
-    // При первом включении мониторинга показываем предупреждение
-    if (!this.isMonitoring && !this.monitoringWarningShown) {
-      const confirmed = confirm(
-        '⚠️ ВНИМАНИЕ: Мониторинг может вызвать feedback (свист)!\n\n' +
-        '✅ ИСПОЛЬЗУЙТЕ НАУШНИКИ\n' +
-        '✅ Держите микрофон подальше от динамиков\n' +
-        '✅ Уменьшите громкость если слышите писк\n\n' +
-        'Продолжить?'
-      );
+  async toggleMonitoring() {
+    if (this.isMonitoring) {
+      // Выключаем — мгновенно, без подтверждения
+      this.isMonitoring = false;
+      this.audioManager.enableMonitoring(false);
+      document.getElementById('btn-monitor').classList.remove('active');
+      return;
+    }
 
-      if (!confirmed) {
-        return;
-      }
-
+    // Включаем — показываем предупреждение если ещё не видели
+    if (!this.monitoringWarningShown) {
+      const confirmed = await this.showMonitoringSheet();
+      if (!confirmed) return;
       this.monitoringWarningShown = true;
     }
 
-    this.isMonitoring = !this.isMonitoring;
+    this.isMonitoring = true;
+    this.audioManager.enableMonitoring(true);
+    document.getElementById('btn-monitor').classList.add('active');
+    this.showToast('⚠️ Мониторинг включен — используйте наушники!');
+  }
 
-    this.audioManager.enableMonitoring(this.isMonitoring);
+  /**
+   * Красивый bottom-sheet вместо системного confirm().
+   * Определяет BT-режим и показывает соответствующее предупреждение.
+   * Возвращает Promise<boolean> — true если пользователь подтвердил.
+   */
+  showMonitoringSheet() {
+    return new Promise((resolve) => {
+      document.getElementById('monitoring-overlay')?.remove();
 
-    const monitorBtn = document.getElementById('btn-monitor');
-    if (this.isMonitoring) {
-      monitorBtn.classList.add('active');
-      this.showToast('⚠️ Мониторинг включен - используйте наушники!');
-    } else {
-      monitorBtn.classList.remove('active');
-    }
+      const isBT = this.audioManager?.bluetoothMode;
+
+      const btBlock = isBT ? `
+        <div class="monitoring-bt-warning">
+          🔵 <strong>Bluetooth режим включён:</strong> через BT-колонку ваш голос задержится
+          на 150–300 мс — это ограничение железа. Петь под себя через BT-колонку будет
+          некомфортно. Рекомендуем петь «вживую», без мониторинга.
+        </div>` : '';
+
+      const overlay = document.createElement('div');
+      overlay.id = 'monitoring-overlay';
+      overlay.className = 'monitoring-overlay';
+      overlay.innerHTML = `
+        <div class="monitoring-sheet">
+          <div class="monitoring-sheet-header">⚠️ Мониторинг голоса</div>
+          <div class="monitoring-sheet-body">
+            ${btBlock}
+            <p class="monitoring-desc">Вы будете слышать свой голос через динамик или наушники в реальном времени.</p>
+            <div class="monitoring-tips">
+              <div class="monitoring-tip">🎧 Используйте наушники — без них возможен свист</div>
+              <div class="monitoring-tip">🔉 Если слышите писк — уменьшите громкость слайдером</div>
+              <div class="monitoring-tip">📱 Держите телефон подальше от колонки</div>
+            </div>
+            <div class="monitoring-actions">
+              <button id="monitoring-cancel" class="btn btn-secondary">Отмена</button>
+              <button id="monitoring-confirm" class="btn btn-primary">Включить</button>
+            </div>
+          </div>
+        </div>`;
+
+      document.body.appendChild(overlay);
+
+      document.getElementById('monitoring-confirm').addEventListener('click', () => {
+        overlay.remove(); resolve(true);
+      });
+      document.getElementById('monitoring-cancel').addEventListener('click', () => {
+        overlay.remove(); resolve(false);
+      });
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) { overlay.remove(); resolve(false); }
+      });
+    });
   }
 
   /**
@@ -862,21 +911,35 @@ class KaraFonApp {
   }
 
   /**
-   * Показать актуальную задержку аудиосистемы в настройках
+   * Показать актуальную задержку аудиосистемы:
+   * • в шапке экрана пения (#header-latency) — всегда видна во время пения
+   * • в настройках (#latency-chip) — детальный вид с описанием
    */
   updateLatencyDisplay() {
+    if (!this.audioManager?.audioContext) return;
+
+    const ctx   = this.audioManager.audioContext;
+    const baseMs = (ctx.baseLatency   || 0) * 1000;
+    const outMs  = (ctx.outputLatency || 0) * 1000;
+    const total  = baseMs + outMs;
+    const quality = total < 15 ? 'good' : total < 30 ? 'ok' : 'slow';
+    const text    = `${total.toFixed(1)} мс`;
+
+    // Шапка экрана пения
+    const headerChip = document.getElementById('header-latency');
+    if (headerChip) {
+      headerChip.textContent = text;
+      headerChip.className   = 'header-latency ' + quality;
+    }
+
+    // Блок в настройках
     const chip = document.getElementById('latency-chip');
+    if (chip) {
+      chip.textContent = text;
+      chip.className   = 'latency-chip ' + quality;
+    }
+
     const desc = document.getElementById('latency-desc');
-    if (!chip || !this.audioManager?.audioContext) return;
-
-    const ctx = this.audioManager.audioContext;
-    const baseMs  = ((ctx.baseLatency   || 0) * 1000);
-    const outMs   = ((ctx.outputLatency || 0) * 1000);
-    const total   = baseMs + outMs;
-
-    chip.textContent = `${total.toFixed(1)} мс`;
-    chip.className   = 'latency-chip ' + (total < 15 ? 'good' : total < 30 ? 'ok' : 'slow');
-
     if (desc) {
       if (total < 15)      desc.textContent = '✅ Отлично — практически незаметная задержка';
       else if (total < 30) desc.textContent = '🟡 Приемлемо — слабо слышна при мониторинге';

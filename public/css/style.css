@@ -1142,6 +1142,116 @@ body {
   user-select: none;
 }
 
+/* ── Header Latency Chip ────────────────────────────────────────────────── */
+/* Маленький индикатор задержки в шапке экрана пения */
+.header-latency {
+  display: block;
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--tg-theme-hint-color);
+  letter-spacing: 0.3px;
+  text-align: center;
+  line-height: 1;
+  margin-top: 2px;
+  min-height: 12px; /* резервируем место чтобы шапка не прыгала */
+}
+.header-latency.good { color: var(--success); }
+.header-latency.ok   { color: var(--warning); }
+.header-latency.slow { color: var(--danger); }
+
+/* ── Karaoke preset button ───────────────────────────────────────────────── */
+.preset-karaoke {
+  background: linear-gradient(135deg, rgba(108,92,231,0.25) 0%, rgba(253,121,168,0.20) 100%);
+  border-color: rgba(108,92,231,0.45);
+}
+.preset-karaoke.active {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+  border-color: var(--primary);
+}
+
+/* ── Monitoring Sheet (замена системного confirm) ────────────────────────── */
+.monitoring-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  z-index: 400;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+
+.monitoring-sheet {
+  width: 100%;
+  background: var(--tg-theme-bg-color);
+  border-radius: 24px 24px 0 0;
+  overflow: hidden;
+  animation: slideUp 0.3s ease;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.monitoring-sheet-header {
+  padding: 20px 20px 0;
+  font-size: 18px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 16px;
+}
+
+.monitoring-sheet-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.monitoring-bt-warning {
+  background: rgba(108,92,231,0.12);
+  border: 1px solid rgba(108,92,231,0.35);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #a29bfe;
+}
+
+.monitoring-bt-warning strong {
+  color: #a29bfe;
+}
+
+.monitoring-desc {
+  font-size: 15px;
+  color: var(--tg-theme-text-color);
+  line-height: 1.5;
+}
+
+.monitoring-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.monitoring-tip {
+  font-size: 14px;
+  color: var(--tg-theme-hint-color);
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border-radius: 10px;
+  line-height: 1.4;
+}
+
+.monitoring-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.monitoring-actions .btn {
+  flex: 1;
+  padding: 14px;
+  font-size: 16px;
+}
+
 /* ── Responsive ───────────────────────────────────────────────────────────── */
 
 /* Очень маленькие экраны по высоте (складные, landscape) */
