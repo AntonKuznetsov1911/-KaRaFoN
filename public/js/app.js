@@ -188,6 +188,14 @@ class KaraFonApp {
       });
     });
 
+    // Позиция микрофона (нижний / авто / верхний)
+    document.querySelectorAll('.mic-pos-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const pos = e.currentTarget.dataset.pos;
+        this.changeMicPositionMode(pos);
+      });
+    });
+
     // Режим Bluetooth
     document.getElementById('bluetooth-mode').addEventListener('change', (e) => {
       const enabled = e.target.checked;
@@ -694,6 +702,32 @@ class KaraFonApp {
     });
 
     this.hideModal('effects');
+  }
+
+  /**
+   * Сменить позицию (тип) микрофона телефона
+   * bottom = нижний (разговорный), top = верхний (громкая связь), auto = система
+   */
+  async changeMicPositionMode(pos) {
+    if (!this.audioManager) return;
+
+    // Обновляем UI
+    document.querySelectorAll('.mic-pos-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`.mic-pos-btn[data-pos="${pos}"]`)?.classList.add('active');
+
+    // Применяем — перезапрашивает mic и перестраивает цепочку
+    const ok = await this.audioManager.setMicPositionMode(pos);
+    if (ok && this.audioManager.mediaStream) {
+      this.audioManager.setMicEnabled(this.isMicActive);
+      if (this.isInRoom) await this.webrtcManager.updateLocalStream();
+    }
+
+    const labels = {
+      bottom: '🎙️ Нижний микрофон (разговор)',
+      top:    '📢 Верхний микрофон (громкая связь)',
+      auto:   '🔄 Авто-режим микрофона'
+    };
+    this.showToast(ok ? labels[pos] : '⚠️ Не удалось переключить микрофон');
   }
 
   /**

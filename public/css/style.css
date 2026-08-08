@@ -1142,6 +1142,58 @@ body {
   user-select: none;
 }
 
+/* ── Mic Position Selector ───────────────────────────────────────────────── */
+.mic-position-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mic-pos-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--card-bg);
+  color: var(--tg-theme-text-color);
+  cursor: pointer;
+  transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mic-pos-btn:active {
+  transform: scale(0.96);
+}
+
+.mic-pos-btn.active {
+  border-color: var(--primary);
+  background: rgba(108, 92, 231, 0.18);
+  box-shadow: 0 0 0 1px var(--primary) inset;
+}
+
+.mic-pos-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.mic-pos-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mic-pos-desc {
+  font-size: 11px;
+  color: var(--tg-theme-hint-color);
+}
+
+.mic-pos-btn.active .mic-pos-desc {
+  color: rgba(162, 155, 254, 0.8);
+}
+
 /* ── Header Latency Chip ────────────────────────────────────────────────── */
 /* Маленький индикатор задержки в шапке экрана пения */
 .header-latency {

@@ -82,6 +82,12 @@ class AudioManager {
     // MediaStreamDestination для WebRTC — обработанный поток (EQ + компрессор + эффекты)
     // пересоздаётся при каждом setupAudioChain(), на iOS заменяется raw-потоком
     this._webrtcDest = null;
+
+    // Позиция микрофона телефона:
+    //  'auto'   — выбор по BT/стандартному режиму (текущее поведение)
+    //  'bottom' — нижний mic (разговорный): echoCancellation: false → OS оставляет первичный mic
+    //  'top'    — верхний mic (громкая связь): echoCancellation: true → OS включает дальнеполевой режим
+    this.micPositionMode = 'auto';
   }
 
   /**
@@ -297,6 +303,51 @@ class AudioManager {
         audio: true
       }
     ];
+
+    // ── Переопределяем цепочку если выбрана конкретная позиция микрофона ────────
+    // Это игнорирует BT/стандартный режим и напрямую задаёт нужные ограничения.
+    //
+    // Как это работает на мобильных телефонах:
+    //  Android/iOS при echoCancellation:false оставляет "первичный" (нижний) mic без обработки.
+    //  При echoCancellation:true ОС активирует дальнеполевой режим, часто переключаясь
+    //  на верхний/боковой mic (тот же путь что при включении громкой связи).
+    if (this.micPositionMode === 'bottom') {
+      // Нижний mic — первичный, разговорный; без обработки OS
+      // splice() заменяет содержимое const-массива in-place, включая length
+      attempts.splice(0, attempts.length,
+        {
+          label: 'bottom mic (нижний, разговор)',
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            ...(deviceId && { deviceId: { exact: deviceId } })
+          }
+        },
+        { label: 'minimal (fallback)', audio: true }
+      );
+    } else if (this.micPositionMode === 'top') {
+      // Верхний mic — дальнеполевой, громкая связь; OS сама переключается на него.
+      // echoCancellation:true говорит ОС что нужен «speakerphone» путь → верхний/боковой mic.
+      // noiseSuppression:false — шумодав встроенный не нужен, у нас свой compressor+NG.
+      attempts.splice(0, attempts.length,
+        {
+          label: 'top mic (верхний, громкая связь)',
+          audio: {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: false },
+            autoGainControl: { ideal: true },
+            ...(deviceId && { deviceId: { ideal: deviceId } })
+          }
+        },
+        {
+          label: 'top mic soft (fallback)',
+          audio: { echoCancellation: true, autoGainControl: true }
+        },
+        { label: 'minimal (fallback)', audio: true }
+      );
+    }
+    // 'auto' — используем уже построенный массив attempts (BT/стандарт)
 
     for (const attempt of attempts) {
       try {
@@ -691,6 +742,34 @@ class AudioManager {
     }
 
     console.log('Delay set to:', ms, 'ms', needsRebuild ? '(chain rebuilt)' : '');
+  }
+
+  /**
+   * Выбрать позицию (физический тип) микрофона телефона
+   *
+   * Как это работает:
+   *  Браузер не может напрямую указать «возьми нижний mic».
+   *  Но ОС реагирует на profile: когда echoCancellation=false → первичный (нижний) mic
+   *  без обработки; когда echoCancellation=true → ОС активирует speakerphone-профиль,
+   *  который на большинстве Android/iOS переключает на верхний/боковой mic.
+   *
+   * @param {string} mode — 'auto' | 'bottom' | 'top'
+   * @returns {Promise<boolean>}
+   */
+  async setMicPositionMode(mode) {
+    this.micPositionMode = mode;
+    console.log('[Mic] Position mode set to:', mode);
+
+    // Перезапрашиваем mic если он уже активен
+    if (this.mediaStream) {
+      const ok = await this.requestMicrophoneAccess();
+      if (ok) {
+        this.setupAudioChain();
+        console.log('[Mic] Restarted with new position mode:', mode);
+      }
+      return ok;
+    }
+    return true;
   }
 
   /**

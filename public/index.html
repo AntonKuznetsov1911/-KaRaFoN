@@ -147,6 +147,33 @@
           <button class="btn-close" id="btn-close-settings">×</button>
         </div>
         <div class="modal-body">
+          <!-- Позиция микрофона -->
+          <div class="setting-group">
+            <label>🎙️ Микрофон телефона</label>
+            <p class="setting-hint">
+              Телефон имеет несколько физических микрофонов. Нижний (разговорный) — рядом со ртом,
+              хорош когда держишь телефон близко. Верхний (громкая связь) — дальнеполевой,
+              лучше когда поёшь с телефоном на расстоянии 30–60 см.
+            </p>
+            <div class="mic-position-buttons">
+              <button class="mic-pos-btn" data-pos="bottom">
+                <span class="mic-pos-icon">⬇️</span>
+                <span class="mic-pos-label">Нижний</span>
+                <span class="mic-pos-desc">Вблизи</span>
+              </button>
+              <button class="mic-pos-btn active" data-pos="auto">
+                <span class="mic-pos-icon">🔄</span>
+                <span class="mic-pos-label">Авто</span>
+                <span class="mic-pos-desc">Система</span>
+              </button>
+              <button class="mic-pos-btn" data-pos="top">
+                <span class="mic-pos-icon">⬆️</span>
+                <span class="mic-pos-label">Верхний</span>
+                <span class="mic-pos-desc">Издали</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Режим Bluetooth -->
           <div class="setting-group">
             <label>📶 Режим Bluetooth</label>
