@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>KaRaFoN</title>
+
+  <!-- ── PWA ── -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#7c4dff">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- iOS PWA -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="KaRaFoN">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+  <!-- SEO / OG -->
+  <meta name="description" content="Пой под музыку один или с друзьями">
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Экран загрузки -->
+    <div id="loading-screen" class="screen active">
+      <div class="loader">
+        <div class="mic-icon">🎤</div>
+        <h1>KaRaFoN</h1>
+        <p>Загрузка...</p>
+      </div>
+    </div>
+
+    <!-- Главный экран -->
+    <div id="main-screen" class="screen">
+      <header>
+        <h1>🎤 KaRaFoN</h1>
+        <p class="subtitle">Караоке с друзьями</p>
+      </header>
+
+      <div class="main-content">
+        <!-- Одиночный режим -->
+        <div class="card" id="solo-card">
+          <div class="card-icon">🎙️</div>
+          <h2>Соло режим</h2>
+          <p>Пой один под любую музыку</p>
+          <button class="btn btn-primary" id="btn-solo">Начать петь</button>
+        </div>
+
+        <!-- Создать комнату -->
+        <div class="card" id="create-card">
+          <div class="card-icon">🎉</div>
+          <h2>Создать комнату</h2>
+          <p>Пригласи друзей петь вместе</p>
+          <button class="btn btn-secondary" id="btn-create-room">Создать</button>
+        </div>
+
+        <!-- Установить приложение (показывается только когда браузер готов к установке) -->
+        <div class="card" id="install-card" style="display:none">
+          <div class="card-icon">📲</div>
+          <h2>Установить приложение</h2>
+          <p>Работает как нативное — без браузера</p>
+          <button class="btn btn-primary" id="btn-install-pwa">⬇️ Установить</button>
+        </div>
+
+        <!-- Присоединиться -->
+        <div class="card" id="join-card">
+          <div class="card-icon">👥</div>
+          <h2>Присоединиться</h2>
+          <p>Войди в комнату друга</p>
+          <div class="input-group">
+            <input type="text" id="room-code-input" placeholder="Код комнаты" maxlength="8">
+            <button class="btn btn-secondary" id="btn-join-room">Войти</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Экран караоке -->
+    <div id="karaoke-screen" class="screen">
+      <header class="karaoke-header">
+        <button class="btn-back" id="btn-back">←</button>
+        <div class="room-info">
+          <span id="room-label">Соло режим</span>
+          <span id="room-id-display" class="room-code"></span>
+          <!-- Задержка аудросистемы — обновляется при входе на экран и при открытии настроек -->
+          <span id="header-latency" class="header-latency"></span>
+        </div>
+        <button class="btn-settings" id="btn-settings">⚙️</button>
+      </header>
+
+      <!-- Визуализация -->
+      <div class="visualizer-container">
+        <canvas id="visualizer"></canvas>
+        <div class="mic-status" id="mic-status">
+          <div class="mic-btn-circle">
+            <div class="mic-icon-large" id="mic-icon">🎤</div>
+          </div>
+          <p id="mic-status-text">Нажми чтобы начать</p>
+        </div>
+      </div>
+
+      <!-- Участники комнаты -->
+      <div id="participants-panel" class="participants-panel hidden">
+        <h3>Участники <span id="participants-count">0</span></h3>
+        <div id="participants-list" class="participants-list"></div>
+        <div class="share-room">
+          <p>Код комнаты:</p>
+          <div class="code-display">
+            <span id="share-room-code">------</span>
+            <button class="btn-copy" id="btn-copy-code">📋</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Контролы -->
+      <div class="controls">
+        <button class="control-btn" id="btn-mic-toggle">
+          <span class="icon">🎙️</span>
+          <span class="label">Микрофон</span>
+        </button>
+        <button class="control-btn" id="btn-monitor">
+          <span class="icon">🔊</span>
+          <span class="label">Мониторинг</span>
+        </button>
+        <button class="control-btn" id="btn-effects">
+          <span class="icon">✨</span>
+          <span class="label">Эффекты</span>
+        </button>
+      </div>
+
+      <!-- Слайдер громкости -->
+      <div class="volume-control">
+        <label>🔈 Громкость микрофона</label>
+        <input type="range" id="volume-slider" min="0" max="200" value="50">
+        <span id="volume-value">50%</span>
+      </div>
+    </div>
+
+    <!-- Модальное окно настроек -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>⚙️ Настройки</h2>
+          <button class="btn-close" id="btn-close-settings">×</button>
+        </div>
+        <div class="modal-body">
+          <!-- Позиция микрофона -->
+          <div class="setting-group">
+            <label>🎙️ Микрофон телефона</label>
+            <p class="setting-hint">
+              Телефон имеет несколько физических микрофонов. Нижний (разговорный) — рядом со ртом,
+              хорош когда держишь телефон близко. Верхний (громкая связь) — дальнеполевой,
+              лучше когда поёшь с телефоном на расстоянии 30–60 см.
+            </p>
+            <div class="mic-position-buttons">
+              <button class="mic-pos-btn" data-pos="bottom">
+                <span class="mic-pos-icon">⬇️</span>
+                <span class="mic-pos-label">Нижний</span>
+                <span class="mic-pos-desc">Вблизи</span>
+              </button>
+              <button class="mic-pos-btn active" data-pos="auto">
+                <span class="mic-pos-icon">🔄</span>
+                <span class="mic-pos-label">Авто</span>
+                <span class="mic-pos-desc">Система</span>
+              </button>
+              <button class="mic-pos-btn" data-pos="top">
+                <span class="mic-pos-icon">⬆️</span>
+                <span class="mic-pos-label">Верхний</span>
+                <span class="mic-pos-desc">Издали</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Режим Bluetooth -->
+          <div class="setting-group">
+            <label>📶 Режим Bluetooth</label>
+            <div class="toggle-container">
+              <label class="toggle">
+                <input type="checkbox" id="bluetooth-mode" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label" id="bluetooth-label">Включён (звук из BT-колонки)</span>
+            </div>
+            <p class="setting-hint">🔵 ВКЛ — звук идёт из Bluetooth-колонки (A2DP). Микрофон — встроенный в телефон.<br>⚪ ВЫКЛ — для наушников/гарнитуры или когда BT не используется.</p>
+          </div>
+
+          <!-- Улучшение звука -->
+          <div class="setting-group">
+            <label>🎚️ Улучшение звука</label>
+            <div class="toggle-container">
+              <label class="toggle">
+                <input type="checkbox" id="audio-enhancement" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label" id="enhancement-label">Включено</span>
+            </div>
+            <p class="setting-hint">Фильтры шума, компрессор и лимитер для чистого звука без искажений</p>
+          </div>
+
+          <!-- Вокальный пресет -->
+          <div class="setting-group">
+            <label>🎙️ Тип голоса</label>
+            <div class="preset-buttons">
+              <button class="preset-btn active" data-preset="natural">Натуральный</button>
+              <button class="preset-btn" data-preset="bright">Яркий</button>
+              <button class="preset-btn" data-preset="warm">Тёплый</button>
+              <button class="preset-btn" data-preset="radio">Радио</button>
+              <button class="preset-btn" data-preset="powerful">Мощный</button>
+              <button class="preset-btn preset-karaoke" data-preset="karaoke">🎤 Сцена</button>
+            </div>
+          </div>
+
+          <!-- Noise Gate -->
+          <div class="setting-group">
+            <label>🔇 Noise Gate</label>
+            <div class="toggle-container">
+              <label class="toggle">
+                <input type="checkbox" id="noise-gate" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label" id="noise-gate-label">Включён</span>
+            </div>
+            <p class="setting-hint">Глушит микрофон когда не поёшь (убирает фоновый шум)</p>
+            <div class="slider-group">
+              <label>Чувствительность</label>
+              <input type="range" id="noise-gate-threshold" min="-60" max="-20" value="-45">
+              <span id="noise-gate-value">-45 дБ</span>
+              <button class="btn-calibrate" id="btn-calibrate">Автокалибровка</button>
+            </div>
+          </div>
+
+          <!-- Индикатор уровня -->
+          <div class="setting-group">
+            <label>📊 Уровень микрофона</label>
+            <div class="level-meter">
+              <div class="level-bar">
+                <div class="level-fill" id="level-fill"></div>
+                <div class="level-peak" id="level-peak"></div>
+              </div>
+              <div class="level-labels">
+                <span>-60</span>
+                <span>-40</span>
+                <span>-20</span>
+                <span>0 dB</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Задержка для синхронизации -->
+          <div class="setting-group">
+            <label>⏱️ Компенсация задержки BT-колонки</label>
+            <p class="setting-hint">Bluetooth A2DP добавляет 150–300 мс задержки — это норма железа, не программы. Используй этот слайдер только для <strong>синхронизации видео</strong>, не для уменьшения задержки.</p>
+            <div class="slider-group">
+              <input type="range" id="delay-compensation" min="0" max="500" value="0">
+              <span id="delay-compensation-value">0 мс</span>
+            </div>
+          </div>
+
+          <!-- Задержка системы -->
+          <div class="setting-group">
+            <label>⚡ Задержка аудросистемы</label>
+            <div class="latency-row">
+              <div class="latency-chip" id="latency-chip">— мс</div>
+              <p class="latency-desc" id="latency-desc">Открой настройки во время пения чтобы измерить</p>
+            </div>
+            <p class="setting-hint">Минимально возможная задержка Web Audio на вашем устройстве. Зависит от железа — обычно 5–20 мс на Android, 10–30 мс на iOS.</p>
+          </div>
+
+          <!-- Дополнительные фильтры -->
+          <div class="setting-group">
+            <label>✨ Улучшения голоса</label>
+            <div class="enhancements-list">
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="anti-feedback" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">Anti-feedback</span>
+                  <span class="enhancement-desc">Защита от "свиста" колонок</span>
+                </div>
+              </div>
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="de-esser" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">De-esser</span>
+                  <span class="enhancement-desc">Убирает резкие "с", "ш"</span>
+                </div>
+              </div>
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="presence" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">Чёткость</span>
+                  <span class="enhancement-desc">Делает голос разборчивее</span>
+                </div>
+              </div>
+              <div class="enhancement-item">
+                <label class="toggle small">
+                  <input type="checkbox" id="warmth">
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="enhancement-info">
+                  <span class="enhancement-name">Теплота</span>
+                  <span class="enhancement-desc">Добавляет басовитость</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Выбор микрофона -->
+          <div class="setting-group">
+            <label>🎙️ Микрофон</label>
+            <select id="mic-select">
+              <option value="">Загрузка...</option>
+            </select>
+          </div>
+
+          <!-- Выбор динамика -->
+          <div class="setting-group">
+            <label>🔊 Вывод звука</label>
+            <select id="speaker-select">
+              <option value="">Загрузка...</option>
+            </select>
+          </div>
+
+          <!-- Эффекты -->
+          <div class="setting-group">
+            <label>✨ Эффекты голоса</label>
+            <div class="effects-grid">
+              <button class="effect-btn" data-effect="none">Без эффекта</button>
+              <button class="effect-btn" data-effect="reverb">Ревер</button>
+              <button class="effect-btn" data-effect="echo">Эхо</button>
+              <button class="effect-btn" data-effect="robot">Робот</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно эффектов -->
+    <div id="effects-modal" class="modal hidden">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2>✨ Эффекты</h2>
+          <button class="btn-close" id="btn-close-effects">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="effects-list">
+            <button class="effect-option active" data-effect="none">
+              <span class="effect-icon">🎤</span>
+              <span>Чистый голос</span>
+            </button>
+            <button class="effect-option" data-effect="reverb">
+              <span class="effect-icon">🏛️</span>
+              <span>Концертный зал</span>
+            </button>
+            <button class="effect-option" data-effect="echo">
+              <span class="effect-icon">🏔️</span>
+              <span>Горное эхо</span>
+            </button>
+            <button class="effect-option" data-effect="telephone">
+              <span class="effect-icon">📞</span>
+              <span>Телефон</span>
+            </button>
+            <button class="effect-option" data-effect="deep">
+              <span class="effect-icon">🎸</span>
+              <span>Глубокий бас</span>
+            </button>
+            <button class="effect-option" data-effect="high">
+              <span class="effect-icon">🎵</span>
+              <span>Высокий голос</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Версия приложения — заменяется автоматически при деплое (deploy.yml) -->
+  <span id="app-version">v26.8.8</span>
+
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/webrtc.js"></script>
+  <script src="js/app.js"></script>
+
+  <!-- ── Service Worker + Auto-Update ── -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      // Запоминаем: был ли SW уже активен ДО загрузки страницы.
+      // Если нет — это первая установка, перезагрузка не нужна.
+      const hadController = !!navigator.serviceWorker.controller;
+
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => {
+            console.log('[SW] Registered, scope:', reg.scope);
+
+            // Запускаем проверку обновлений сразу и каждые 60 минут
+            reg.update();
+            setInterval(() => reg.update(), 60 * 60 * 1000);
+          })
+          .catch(err => console.warn('[SW] Registration failed:', err));
+      });
+
+      // ── Обработка обновления ────────────────────────────────────────────────
+      // SW посылает SW_UPDATED сразу после clients.claim() в activate-хэндлере.
+      // Дополнительно ловим controllerchange — срабатывает когда новый SW
+      // берёт управление страницей (после skipWaiting + clients.claim).
+      let updatePending = false;
+
+      function applyUpdate() {
+        if (updatePending) return;
+        updatePending = true;
+
+        const isInKaraoke = window.app?.currentScreen === 'karaoke';
+
+        if (isInKaraoke) {
+          // Пользователь поёт — не ломаем сессию, показываем кнопку
+          const banner = document.createElement('div');
+          banner.id = 'update-banner';
+          banner.style.cssText = [
+            'position:fixed;top:0;left:0;right:0;z-index:9999',
+            'background:#6c5ce7;color:#fff',
+            'display:flex;align-items:center;justify-content:center;gap:12px',
+            'padding:12px 16px;font-size:14px;font-weight:500'
+          ].join(';');
+          banner.innerHTML =
+            '🔄 Доступно обновление KaRaFoN' +
+            '<button onclick="location.reload()" style="' +
+              'padding:6px 14px;border:none;border-radius:8px;' +
+              'background:#fff;color:#6c5ce7;font-weight:700;cursor:pointer' +
+            '">Обновить</button>' +
+            '<button onclick="this.parentElement.remove()" style="' +
+              'padding:6px 10px;border:none;border-radius:8px;' +
+              'background:rgba(255,255,255,0.2);color:#fff;cursor:pointer' +
+            '">✕</button>';
+          document.body.appendChild(banner);
+        } else {
+          // На главном экране — тихо перезагружаемся
+          if (window.app?.showToast) {
+            window.app.showToast('🔄 Установлено обновление...');
+          }
+          setTimeout(() => location.reload(), 1200);
+        }
+      }
+
+      // Способ 1: SW сам сообщает что активирован
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data?.type === 'SW_UPDATED' && hadController) {
+          console.log('[SW] Update message received');
+          applyUpdate();
+        }
+      });
+
+      // Способ 2: Детектируем смену контроллера (резервный путь)
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController) {
+          console.log('[SW] Controller changed — update detected');
+          applyUpdate();
+        }
+      });
+    }
+  </script>
+</body>
+</html>

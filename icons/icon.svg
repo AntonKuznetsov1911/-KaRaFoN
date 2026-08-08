@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Основной градиент фона -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#0d0d26"/>
+      <stop offset="50%"  stop-color="#1a0e3a"/>
+      <stop offset="100%" stop-color="#0f0f23"/>
+    </linearGradient>
+
+    <!-- Свечение фиолетового круга -->
+    <radialGradient id="glow" cx="50%" cy="48%" r="50%">
+      <stop offset="0%"   stop-color="#7c4dff" stop-opacity="0.55"/>
+      <stop offset="45%"  stop-color="#6c3fd4" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#6c3fd4" stop-opacity="0.00"/>
+    </radialGradient>
+
+    <!-- Градиент микрофона: белый с лёгким сиянием сверху -->
+    <linearGradient id="mic_body" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#d4c4ff"/>
+    </linearGradient>
+
+    <!-- Блик на микрофоне -->
+    <linearGradient id="mic_shine" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.00"/>
+    </linearGradient>
+
+    <!-- Фильтр мягкого свечения -->
+    <filter id="blur_glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="28" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Тень для микрофона -->
+    <filter id="mic_shadow" x="-20%" y="-10%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#4a1fd4" flood-opacity="0.6"/>
+    </filter>
+
+    <!-- Маска для скруглённых углов (maskable icon) -->
+    <clipPath id="round">
+      <rect width="1024" height="1024" rx="230" ry="230"/>
+    </clipPath>
+  </defs>
+
+  <!-- ── Фон ── -->
+  <g clip-path="url(#round)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+
+    <!-- Тонкая сетка точек — текстура -->
+    <rect width="1024" height="1024" fill="none" opacity="0.03"
+          style="background-image: radial-gradient(circle, #fff 1px, transparent 1px);"/>
+
+    <!-- Большое фоновое свечение -->
+    <circle cx="512" cy="490" r="380" fill="url(#glow)" filter="url(#blur_glow)"/>
+
+    <!-- Кольцо 1 (внешнее, прозрачное) -->
+    <circle cx="512" cy="490" r="335" fill="none"
+            stroke="#7c4dff" stroke-width="1.5" stroke-opacity="0.25"/>
+
+    <!-- Кольцо 2 (среднее) -->
+    <circle cx="512" cy="490" r="268" fill="none"
+            stroke="#9b77ff" stroke-width="2" stroke-opacity="0.35"/>
+
+    <!-- Заполненный круг-подложка под микрофон -->
+    <circle cx="512" cy="490" r="210"
+            fill="#6c3fd4" fill-opacity="0.18"
+            stroke="#8b5cf6" stroke-width="2.5" stroke-opacity="0.55"/>
+
+    <!-- ── Микрофон ── -->
+    <g filter="url(#mic_shadow)">
+      <!-- Тело микрофона (капсула) -->
+      <rect x="432" y="230" width="160" height="280" rx="80" ry="80"
+            fill="url(#mic_body)"/>
+
+      <!-- Блик на теле микрофона -->
+      <rect x="450" y="248" width="50" height="120" rx="25" ry="25"
+            fill="url(#mic_shine)"/>
+
+      <!-- Горизонтальные линии сетки на теле (как у настоящего микрофона) -->
+      <line x1="435" y1="320" x2="589" y2="320" stroke="#6c3fd4" stroke-width="3" stroke-opacity="0.35"/>
+      <line x1="435" y1="360" x2="589" y2="360" stroke="#6c3fd4" stroke-width="3" stroke-opacity="0.35"/>
+      <line x1="435" y1="400" x2="589" y2="400" stroke="#6c3fd4" stroke-width="3" stroke-opacity="0.35"/>
+
+      <!-- Стойка-дуга микрофона -->
+      <path d="M 345 490 Q 345 660 512 660 Q 679 660 679 490"
+            fill="none" stroke="#e8deff" stroke-width="36" stroke-linecap="round"/>
+
+      <!-- Вертикальная ножка -->
+      <line x1="512" y1="660" x2="512" y2="760"
+            stroke="#e8deff" stroke-width="36" stroke-linecap="round"/>
+
+      <!-- Основание -->
+      <line x1="370" y1="760" x2="654" y2="760"
+            stroke="#e8deff" stroke-width="36" stroke-linecap="round"/>
+    </g>
+
+    <!-- ── Звуковые волны справа ── -->
+    <g opacity="0.70">
+      <!-- Волна 1 (ближняя) -->
+      <path d="M 710 430 Q 750 490 710 550"
+            fill="none" stroke="#a78bfa" stroke-width="20" stroke-linecap="round"/>
+      <!-- Волна 2 (средняя) -->
+      <path d="M 755 385 Q 815 490 755 595"
+            fill="none" stroke="#8b5cf6" stroke-width="18" stroke-linecap="round" opacity="0.70"/>
+      <!-- Волна 3 (дальняя) -->
+      <path d="M 798 342 Q 878 490 798 638"
+            fill="none" stroke="#7c4dff" stroke-width="15" stroke-linecap="round" opacity="0.45"/>
+    </g>
+
+    <!-- ── Надпись KaRaFoN ── -->
+    <text x="512" y="910"
+          font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+          font-size="88" font-weight="700" letter-spacing="6"
+          text-anchor="middle" fill="#ffffff" fill-opacity="0.92">KaRaFoN</text>
+
+  </g>
+</svg>

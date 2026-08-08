@@ -1,0 +1,1458 @@
+/**
+ * KaRaFoN Audio Manager
+ * Управление микрофоном, аудио эффектами и визуализацией
+ */
+
+class AudioManager {
+  constructor() {
+    this.audioContext = null;
+    this.mediaStream = null;
+    this.sourceNode = null;
+    this.gainNode = null;
+    this.analyserNode = null;
+    this.destinationNode = null;
+    this.effectNodes = [];
+
+    // Узлы для улучшения качества звука
+    this.highpassFilter = null;  // Убирает низкочастотный гул
+    this.lowpassFilter = null;   // Убирает высокочастотный шум
+    this.compressor = null;      // Выравнивает громкость
+    this.limiter = null;         // Предотвращает искажения
+    this.noiseGate = null;       // Убирает тихий шум
+
+    this.isInitialized = false;
+    this.isMicEnabled = false;
+    this.isMonitoringEnabled = false;
+    this.currentEffect = 'none';
+    this.volume = 0.5; // Снижена с 1.0 для предотвращения feedback
+
+    // Режим Bluetooth - отключает обработку аудио чтобы не переключать профиль.
+    // По умолчанию ВКЛЮЧЁН: колонка остаётся в A2DP (стерео), динамик телефона не используется.
+    // Выключить нужно только при использовании наушников/гарнитуры в режиме комнаты.
+    this.bluetoothMode = true;
+
+    // Настройки качества звука
+    this.audioEnhancement = true;
+    this.noiseGateEnabled = true;
+    this.noiseGateThreshold = -45; // dB — оптимальный порог для голоса
+    this.deEsserEnabled = true;
+    this.presenceEnabled = true;
+    this.warmthEnabled = false;
+
+    // Вокальные пресеты
+    this.vocalPreset = 'natural'; // natural, bright, warm, radio, telephone
+
+    // Дополнительные узлы
+    this.deEsserFilter = null;
+    this.presenceFilter = null;
+    this.warmthFilter = null;
+    this.noiseGateGain = null;
+
+    // Anti-feedback
+    this.antiFeedbackEnabled = true;
+    this.antiFeedbackFilters = [];
+    this.feedbackFrequencies = [1000, 2000, 4000]; // Типичные частоты обратной связи
+
+    // Задержка для синхронизации с Bluetooth
+    this.delayNode = null;
+    this.delayTime = 0; // мс
+
+    // Stereo spread
+    this.stereoEnabled = false;
+    this.stereoSpreadNode = null;
+
+    // Noise Gate состояние
+    this.noiseGateOpen = false;
+    this.noiseGateAnimationId = null;
+    // noiseGateThreshold задаётся выше в секции настроек (не дублируем)
+
+    // Уровень сигнала для индикатора
+    this.currentLevel = 0;
+    this.peakLevel = 0;
+    this.levelCallbacks = [];
+
+    this.devices = {
+      microphones: [],
+      speakers: []
+    };
+
+    // Callback: вызывается когда подключается/отключается аудиоустройство
+    this.onDeviceChange = null;
+
+    // MediaStreamDestination для WebRTC — обработанный поток (EQ + компрессор + эффекты)
+    // пересоздаётся при каждом setupAudioChain(), на iOS заменяется raw-потоком
+    this._webrtcDest = null;
+
+    // Позиция микрофона телефона:
+    //  'auto'   — выбор по BT/стандартному режиму (текущее поведение)
+    //  'bottom' — нижний mic (разговорный): echoCancellation: false → OS оставляет первичный mic
+    //  'top'    — верхний mic (громкая связь): echoCancellation: true → OS включает дальнеполевой режим
+    this.micPositionMode = 'auto';
+  }
+
+  /**
+   * Инициализация Audio Context
+   */
+  async init() {
+    if (this.isInitialized) return true;
+
+    try {
+      // Создаём Audio Context
+      // iOS/Safari требует особой обработки
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+      // latencyHint: 'interactive' — оптимальный баланс задержки и стабильности.
+      // latencyHint: 0 давал чуть меньше буфер (~5-10ms vs ~10-20ms), но
+      // нестабильную работу anti-feedback фильтров → свист.
+      // sampleRate не указываем: браузер использует native rate железа,
+      // что исключает пересэмплирование и его задержку.
+      this.audioContext = new AudioContextClass({ latencyHint: 'interactive' });
+
+      // iOS: AudioContext создаётся в suspended состоянии, нужно resume
+      if (this.audioContext.state === 'suspended') {
+        console.log('AudioContext suspended, will resume on user interaction');
+      }
+
+      const baseMs  = ((this.audioContext.baseLatency   || 0) * 1000).toFixed(1);
+      const outMs   = ((this.audioContext.outputLatency || 0) * 1000).toFixed(1);
+      const totalMs = (parseFloat(baseMs) + parseFloat(outMs)).toFixed(1);
+      console.log(`AudioContext ready | base: ${baseMs}ms | output: ${outMs}ms | total: ${totalMs}ms | rate: ${this.audioContext.sampleRate}Hz`);
+
+      // Сохраняем для отображения в настройках
+      this._audioLatencyMs = totalMs;
+
+      // Получаем список устройств
+      await this.updateDeviceList();
+
+      // Слушаем изменения устройств (подключение/отключение BT-колонки, наушников и т.д.)
+      navigator.mediaDevices.addEventListener('devicechange', async () => {
+        await this.updateDeviceList();
+        if (this.onDeviceChange) {
+          this.onDeviceChange(this.devices);
+        }
+      });
+
+      this.isInitialized = true;
+      console.log('AudioManager initialized');
+      return true;
+    } catch (error) {
+      console.error('Failed to initialize AudioManager:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Разблокировать параллельное воспроизведение музыки
+   *
+   * Проблема: когда браузер активирует AudioContext + getUserMedia, он по умолчанию
+   * запрашивает у ОС эксклюзивный аудио-фокус → Spotify/YouTube паузируются.
+   *
+   * Решения:
+   * 1. navigator.audioSession API (Chrome 120+, Safari 17.4+) — явно говорим ОС,
+   *    что мы хотим смешиваться с другим аудио (playback: ambient).
+   * 2. Тихий буфер (iOS trick) — воспроизводим 1 сэмпл тишины при user gesture.
+   *    Это принуждает iOS Safari перейти в AVAudioSession.Category.playAndRecord
+   *    с опцией .mixWithOthers вместо эксклюзивного режима.
+   *
+   * ВАЖНО: вызывать ТОЛЬКО во время user gesture (клик кнопки).
+   */
+  async unlockAudioMixing() {
+    // ── 1. Web AudioSession API (экспериментальный, не везде работает) ──
+    if ('audioSession' in navigator) {
+      try {
+        // 'play-and-record' = пишем микрофон + выводим звук, но не прерываем других
+        // На iOS это открывает путь к AVAudioSessionCategoryPlayAndRecord+mixWithOthers
+        navigator.audioSession.type = 'play-and-record';
+        console.log('[Audio] navigator.audioSession.type = play-and-record');
+      } catch (e) {
+        console.warn('[Audio] navigator.audioSession failed:', e.message);
+      }
+    }
+
+    // ── 2. Тихий буфер (iOS/Android trick) ──
+    // Воспроизводим 1 сэмпл тишины через AudioContext во время user gesture.
+    // На iOS это активирует аудио сессию в режиме совместного использования.
+    if (!this.audioContext) return;
+
+    try {
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+
+      const silentBuf = this.audioContext.createBuffer(1, 1, this.audioContext.sampleRate);
+      const src = this.audioContext.createBufferSource();
+      src.buffer = silentBuf;
+
+      // Соединяем через gain=0 — тихо, но AudioContext активирован
+      const muteGain = this.audioContext.createGain();
+      muteGain.gain.value = 0;
+      src.connect(muteGain);
+      muteGain.connect(this.audioContext.destination);
+      src.start(0);
+
+      console.log('[Audio] Silent buffer played — audio mixing unlocked');
+    } catch (e) {
+      console.warn('[Audio] Silent buffer unlock failed:', e.message);
+    }
+  }
+
+  /**
+   * Обновить список аудио устройств
+   */
+  async updateDeviceList() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+
+      this.devices.microphones = devices.filter(d => d.kind === 'audioinput');
+      this.devices.speakers = devices.filter(d => d.kind === 'audiooutput');
+
+      console.log('Audio devices updated:', this.devices);
+      return this.devices;
+    } catch (error) {
+      console.error('Failed to enumerate devices:', error);
+      return this.devices;
+    }
+  }
+
+  /**
+   * Установить режим Bluetooth
+   * В этом режиме отключается вся обработка аудио чтобы не переключать
+   * Bluetooth с A2DP (музыка) на HFP (гарнитура)
+   */
+  setBluetoothMode(enabled) {
+    this.bluetoothMode = enabled;
+    console.log('Bluetooth mode:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Запросить доступ к микрофону
+   *
+   * Использует цепочку попыток (fallback chain) для совместимости с Bluetooth:
+   * 1. Предпочтительные ограничения (A2DP-friendly или с EC)
+   * 2. Мягкие ограничения (ideal вместо hard constraints)
+   * 3. Минимальные ограничения (audio: true) — работает всегда
+   *
+   * Проблема: на Android при подключённой BT-колонке некоторые версии Chrome
+   * блокируют getUserMedia с echoCancellation: false, потому что Android
+   * пытается активировать HFP для микрофона, а колонка без микрофона его не
+   * поддерживает → браузер получает отказ от ОС → тихо падает.
+   */
+  async requestMicrophoneAccess(deviceId = null) {
+    // Останавливаем старый поток: иначе треки остаются активными в фоне
+    // (видна иконка микрофона в шторке уведомлений, лишний расход батареи)
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(t => t.stop());
+      this.mediaStream = null;
+    }
+
+    // iOS: Обязательно resume AudioContext перед getUserMedia
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      console.log('Resuming AudioContext before microphone access...');
+      await this.audioContext.resume();
+      console.log('AudioContext resumed, state:', this.audioContext.state);
+    }
+
+    // Цепочка попыток от строгих ограничений к минимальным
+    const attempts = this.bluetoothMode ? [
+      // Попытка 1: Идеальный Bluetooth режим (A2DP) — отключаем EC полностью
+      // Звук из BT-колонки (A2DP), голос через встроенный микрофон телефона.
+      // Может упасть на Android если ОС требует HFP для mic при активном BT.
+      {
+        label: 'BT A2DP (no EC)',
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          ...(deviceId && { deviceId: { exact: deviceId } })
+        }
+      },
+      // Попытка 2: Мягкое предпочтение — ideal вместо hard false.
+      // Даём Android свободу выбора профиля, предпочитаем без EC.
+      {
+        label: 'BT soft (ideal no EC)',
+        audio: {
+          echoCancellation: { ideal: false },
+          noiseSuppression: { ideal: false },
+          autoGainControl: { ideal: false },
+          ...(deviceId && { deviceId: { ideal: deviceId } })
+        }
+      },
+      // Попытка 3: Минимальные ограничения — пусть ОС решает сама.
+      // Гарантированно работает, но может переключить BT на HFP.
+      {
+        label: 'minimal (audio:true)',
+        audio: true
+      }
+    ] : [
+      // Обычный режим (наушники / гарнитура / без BT-колонки)
+      // ideal — предпочтение, но не принудительно; не ломает Bluetooth A2DP
+      {
+        label: 'standard (ideal EC)',
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 48000 },
+          channelCount: { ideal: 1 },
+          ...(deviceId && { deviceId: { exact: deviceId } })
+        }
+      },
+      // Fallback для обычного режима
+      {
+        label: 'minimal (audio:true)',
+        audio: true
+      }
+    ];
+
+    // ── Переопределяем цепочку если выбрана конкретная позиция микрофона ────────
+    // Это игнорирует BT/стандартный режим и напрямую задаёт нужные ограничения.
+    //
+    // Как это работает на мобильных телефонах:
+    //  Android/iOS при echoCancellation:false оставляет "первичный" (нижний) mic без обработки.
+    //  При echoCancellation:true ОС активирует дальнеполевой режим, часто переключаясь
+    //  на верхний/боковой mic (тот же путь что при включении громкой связи).
+    if (this.micPositionMode === 'bottom') {
+      // Нижний mic — первичный, разговорный; без обработки OS
+      // splice() заменяет содержимое const-массива in-place, включая length
+      attempts.splice(0, attempts.length,
+        {
+          label: 'bottom mic (нижний, разговор)',
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            ...(deviceId && { deviceId: { exact: deviceId } })
+          }
+        },
+        { label: 'minimal (fallback)', audio: true }
+      );
+    } else if (this.micPositionMode === 'top') {
+      // Верхний mic — дальнеполевой, громкая связь; OS сама переключается на него.
+      // echoCancellation:true говорит ОС что нужен «speakerphone» путь → верхний/боковой mic.
+      // noiseSuppression:false — шумодав встроенный не нужен, у нас свой compressor+NG.
+      attempts.splice(0, attempts.length,
+        {
+          label: 'top mic (верхний, громкая связь)',
+          audio: {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: false },
+            autoGainControl: { ideal: true },
+            ...(deviceId && { deviceId: { ideal: deviceId } })
+          }
+        },
+        {
+          label: 'top mic soft (fallback)',
+          audio: { echoCancellation: true, autoGainControl: true }
+        },
+        { label: 'minimal (fallback)', audio: true }
+      );
+    }
+    // 'auto' — используем уже построенный массив attempts (BT/стандарт)
+
+    for (const attempt of attempts) {
+      try {
+        console.log(`Requesting microphone [${attempt.label}]...`);
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: attempt.audio });
+
+        // Обновляем список устройств после получения разрешения
+        await this.updateDeviceList();
+
+        const track = this.mediaStream.getAudioTracks()[0];
+        const settings = track?.getSettings?.() || {};
+        console.log(`✅ Microphone granted [${attempt.label}]`, {
+          echoCancellation: settings.echoCancellation,
+          deviceId: settings.deviceId?.substring(0, 8)
+        });
+
+        // Сохраняем, какая попытка сработала (для диагностики)
+        this.lastMicAttemptLabel = attempt.label;
+        return true;
+      } catch (err) {
+        console.warn(`❌ Attempt [${attempt.label}] failed: ${err.name} — ${err.message}`);
+        // Продолжаем к следующей попытке
+      }
+    }
+
+    // Все попытки провалились
+    console.error('Microphone access denied after all fallback attempts');
+    return false;
+  }
+
+  /**
+   * Настройка аудио цепочки
+   */
+  setupAudioChain() {
+    if (!this.audioContext || !this.mediaStream) return false;
+
+    // iOS: Resume AudioContext если suspended
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume().then(() => {
+        console.log('AudioContext resumed in setupAudioChain');
+      });
+    }
+
+    // Убираем предыдущую цепочку
+    this.disconnectAll();
+    this.stopNoiseGate();
+
+    // Создаём источник
+    this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+
+    // monitorInsertNode создаётся ПОСЛЕ anti-feedback фильтров (см. ниже).
+    // Если подключить ДО фильтров — мониторинг идёт напрямую из mic → speaker
+    // без notch-фильтрации → петля обратной связи → свист.
+    this.monitorInsertNode = null;
+
+    // === УЛУЧШЕНИЕ КАЧЕСТВА ЗВУКА ===
+
+    // 1. High-pass фильтр - убирает низкочастотный гул (< 80 Hz)
+    this.highpassFilter = this.audioContext.createBiquadFilter();
+    this.highpassFilter.type = 'highpass';
+    this.highpassFilter.frequency.value = 80;
+    this.highpassFilter.Q.value = 0.7;
+
+    // 2. Low-pass фильтр - убирает высокочастотный шум (> 12000 Hz)
+    this.lowpassFilter = this.audioContext.createBiquadFilter();
+    this.lowpassFilter.type = 'lowpass';
+    this.lowpassFilter.frequency.value = 12000;
+    this.lowpassFilter.Q.value = 0.7;
+
+    // 3. De-esser - убирает резкие "с", "ш" звуки (4-8 kHz)
+    this.deEsserFilter = this.audioContext.createBiquadFilter();
+    this.deEsserFilter.type = 'peaking';
+    this.deEsserFilter.frequency.value = 6000;
+    this.deEsserFilter.Q.value = 2;
+    this.deEsserFilter.gain.value = this.deEsserEnabled ? -6 : 0;
+
+    // 4. Presence - добавляет чёткость голосу (2-4 kHz)
+    this.presenceFilter = this.audioContext.createBiquadFilter();
+    this.presenceFilter.type = 'peaking';
+    this.presenceFilter.frequency.value = 3000;
+    this.presenceFilter.Q.value = 1;
+    this.presenceFilter.gain.value = this.presenceEnabled ? 3 : 0;
+
+    // 5. Warmth - добавляет теплоту (200-400 Hz)
+    this.warmthFilter = this.audioContext.createBiquadFilter();
+    this.warmthFilter.type = 'peaking';
+    this.warmthFilter.frequency.value = 250;
+    this.warmthFilter.Q.value = 1;
+    this.warmthFilter.gain.value = this.warmthEnabled ? 4 : 0;
+
+    // 6. Компрессор - выравнивает громкость, делает голос чётче
+    this.compressor = this.audioContext.createDynamicsCompressor();
+    this.compressor.threshold.value = -24;  // Порог срабатывания (dB)
+    this.compressor.knee.value = 12;        // Мягкость перехода
+    this.compressor.ratio.value = 4;        // Степень сжатия
+    this.compressor.attack.value = 0.003;   // Быстрая атака (3ms)
+    this.compressor.release.value = 0.15;   // Быстрый релиз (150ms)
+
+    // 7. Noise Gate Gain - для программного noise gate
+    this.noiseGateGain = this.audioContext.createGain();
+    this.noiseGateGain.gain.value = 1;
+
+    // 8. Gain узел для громкости
+    this.gainNode = this.audioContext.createGain();
+    this.gainNode.gain.value = this.volume;
+
+    // 9. Anti-feedback фильтры - узкополосные notch фильтры на проблемных частотах
+    this.antiFeedbackFilters = [];
+    if (this.antiFeedbackEnabled) {
+      // Создаём notch фильтры на типичных частотах обратной связи
+      const feedbackFreqs = [800, 1600, 3200, 4000, 6300];
+      feedbackFreqs.forEach(freq => {
+        const notch = this.audioContext.createBiquadFilter();
+        notch.type = 'notch';
+        notch.frequency.value = freq;
+        notch.Q.value = 50; // Более агрессивное подавление (было 30)
+        this.antiFeedbackFilters.push(notch);
+      });
+    }
+
+    // 10. Задержка для синхронизации с Bluetooth
+    this.delayNode = this.audioContext.createDelay(1.0);
+    this.delayNode.delayTime.value = this.delayTime / 1000; // мс -> сек
+
+    // 11. Лимитер - предотвращает клиппинг и искажения
+    this.limiter = this.audioContext.createDynamicsCompressor();
+    this.limiter.threshold.value = -3;      // Почти на максимуме
+    this.limiter.knee.value = 0;            // Жёсткий лимит
+    this.limiter.ratio.value = 20;          // Сильное ограничение
+    this.limiter.attack.value = 0.001;      // Мгновенная атака
+    this.limiter.release.value = 0.1;       // Быстрый релиз
+
+    // 12. Анализатор для визуализации
+    this.analyserNode = this.audioContext.createAnalyser();
+    this.analyserNode.fftSize = 256;
+    this.analyserNode.smoothingTimeConstant = 0.8;
+
+    // === СБОРКА ЦЕПОЧКИ ===
+    // source -> highpass -> lowpass -> deesser -> presence -> warmth ->
+    // antifeedback -> compressor -> noiseGate -> gain -> delay -> limiter -> analyser
+
+    if (this.audioEnhancement) {
+      let currentNode = this.sourceNode;
+
+      // Базовые фильтры
+      currentNode.connect(this.highpassFilter);
+      currentNode = this.highpassFilter;
+
+      currentNode.connect(this.lowpassFilter);
+      currentNode = this.lowpassFilter;
+
+      currentNode.connect(this.deEsserFilter);
+      currentNode = this.deEsserFilter;
+
+      currentNode.connect(this.presenceFilter);
+      currentNode = this.presenceFilter;
+
+      currentNode.connect(this.warmthFilter);
+      currentNode = this.warmthFilter;
+
+      // Anti-feedback фильтры (цепочка notch фильтров)
+      if (this.antiFeedbackEnabled && this.antiFeedbackFilters.length > 0) {
+        this.antiFeedbackFilters.forEach(filter => {
+          currentNode.connect(filter);
+          currentNode = filter;
+        });
+      }
+
+      // Точка мониторинга — подключается ПОСЛЕ anti-feedback фильтров.
+      // КРИТИЧЕСКИ: НЕ ДО фильтров! Если тапать до notch-фильтров, мониторинг
+      // создаёт прямой путь mic → speaker без защиты от обратной связи → свист.
+      // После фильтров: mic → notch[800,1600,3200,4000,6300] → monitorInsertNode → speaker
+      // Notch фильтры гасят частоты свиста ДО того как звук попадёт в динамик.
+      this.monitorInsertNode = this.audioContext.createGain();
+      this.monitorInsertNode.gain.value = 1.0;
+      currentNode.connect(this.monitorInsertNode); // боковой отвод (параллельно компрессору)
+
+      // Компрессор -> Noise Gate -> Gain -> Limiter -> Analyser
+      // КРИТИЧЕСКИ: Убрали delay из цепочки для минимальной задержки!
+      // Delay используется только если пользователь явно установил компенсацию
+      currentNode.connect(this.compressor);
+      this.compressor.connect(this.noiseGateGain);
+      this.noiseGateGain.connect(this.gainNode);
+
+      // Если установлена компенсация задержки > 0, используем delay
+      if (this.delayTime > 0) {
+        this.gainNode.connect(this.delayNode);
+        this.delayNode.connect(this.limiter);
+      } else {
+        // Без delay - минимальная задержка
+        this.gainNode.connect(this.limiter);
+      }
+      this.limiter.connect(this.analyserNode);
+
+      // Обработанный поток для WebRTC — друзья слышат голос с EQ, компрессором, NG и эффектами.
+      // analyserNode — финальная точка после всех эффектов (см. applyEffect).
+      // iOS Safari: createMediaStreamDestination() нестабилен в WebRTC → getOutputStream() использует fallback.
+      this._webrtcDest = this.audioContext.createMediaStreamDestination();
+      this.analyserNode.connect(this._webrtcDest);
+
+      // Запускаем Noise Gate если включен
+      if (this.noiseGateEnabled) {
+        this.startNoiseGate();
+      }
+
+      // Запускаем мониторинг уровня
+      this.startLevelMeter();
+
+      console.log('Audio chain with full enhancement setup');
+    } else {
+      // Простая цепочка без обработки - МИНИМАЛЬНАЯ ЗАДЕРЖКА
+      this.sourceNode.connect(this.gainNode);
+
+      // В режиме без обработки нет anti-feedback фильтров, поэтому:
+      // - мониторинг через наушники — всё равно тапаем от источника
+      // - если нет наушников и есть колонки — рекомендуется не включать мониторинг
+      this.monitorInsertNode = this.audioContext.createGain();
+      this.monitorInsertNode.gain.value = 1.0;
+      this.sourceNode.connect(this.monitorInsertNode);
+
+      // Delay только если явно установлен > 0
+      if (this.delayTime > 0) {
+        this.gainNode.connect(this.delayNode);
+        this.delayNode.connect(this.analyserNode);
+      } else {
+        this.gainNode.connect(this.analyserNode);
+      }
+
+      // Обработанный поток для WebRTC (в режиме без обработки — только gainNode)
+      this._webrtcDest = this.audioContext.createMediaStreamDestination();
+      this.analyserNode.connect(this._webrtcDest);
+
+      this.startLevelMeter();
+      console.log('Audio chain without enhancement setup (zero latency)');
+    }
+
+    // Применяем вокальный пресет
+    this.applyVocalPreset(this.vocalPreset);
+
+    // Применяем эффект если выбран
+    this.applyEffect(this.currentEffect);
+
+    // Восстанавливаем мониторинг если был включён до перестройки цепочки.
+    // disconnectAll() разрывает monitorGainNode → destination, поэтому без этого
+    // мониторинг перестаёт работать после любого пересборки (смена пресета, AF и т.д.)
+    if (this.isMonitoringEnabled) {
+      this.enableMonitoring(true);
+    }
+
+    console.log('Audio chain setup complete');
+    return true;
+  }
+
+  /**
+   * Индикатор уровня сигнала
+   */
+  startLevelMeter() {
+    if (this.levelMeterAnimationId) return;
+
+    const analyser = this.audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    this.sourceNode.connect(analyser);
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Float32Array(bufferLength);
+
+    const updateLevel = () => {
+      analyser.getFloatTimeDomainData(dataArray);
+
+      // Вычисляем RMS
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i] * dataArray[i];
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+
+      // Конвертируем в проценты (0-100)
+      // -60 dB = 0%, 0 dB = 100%
+      const db = 20 * Math.log10(rms + 0.0001);
+      this.currentLevel = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+
+      // Peak hold
+      if (this.currentLevel > this.peakLevel) {
+        this.peakLevel = this.currentLevel;
+      } else {
+        this.peakLevel *= 0.95; // Медленный спад
+      }
+
+      // Вызываем callbacks
+      this.levelCallbacks.forEach(cb => cb(this.currentLevel, this.peakLevel));
+
+      this.levelMeterAnimationId = requestAnimationFrame(updateLevel);
+    };
+
+    updateLevel();
+  }
+
+  stopLevelMeter() {
+    if (this.levelMeterAnimationId) {
+      cancelAnimationFrame(this.levelMeterAnimationId);
+      this.levelMeterAnimationId = null;
+    }
+  }
+
+  /**
+   * Подписаться на обновления уровня сигнала
+   */
+  onLevelChange(callback) {
+    this.levelCallbacks.push(callback);
+    return () => {
+      const index = this.levelCallbacks.indexOf(callback);
+      if (index > -1) this.levelCallbacks.splice(index, 1);
+    };
+  }
+
+  /**
+   * Получить текущий уровень
+   */
+  getLevel() {
+    return { current: this.currentLevel, peak: this.peakLevel };
+  }
+
+  /**
+   * Автокалибровка Noise Gate - определяет уровень фонового шума
+   */
+  async calibrateNoiseGate() {
+    return new Promise((resolve) => {
+      if (!this.audioContext || !this.sourceNode) {
+        resolve(-45);
+        return;
+      }
+
+      const analyser = this.audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      this.sourceNode.connect(analyser);
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Float32Array(bufferLength);
+
+      let samples = [];
+      let sampleCount = 0;
+      const maxSamples = 30; // ~0.5 секунды
+
+      const collectSamples = () => {
+        analyser.getFloatTimeDomainData(dataArray);
+
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i] * dataArray[i];
+        }
+        const rms = Math.sqrt(sum / bufferLength);
+        const db = 20 * Math.log10(rms + 0.0001);
+        samples.push(db);
+
+        sampleCount++;
+        if (sampleCount < maxSamples) {
+          requestAnimationFrame(collectSamples);
+        } else {
+          // Вычисляем средний уровень шума + запас 6 dB
+          const avgNoise = samples.reduce((a, b) => a + b) / samples.length;
+          const threshold = Math.round(avgNoise + 6);
+
+          // Ограничиваем диапазон
+          const finalThreshold = Math.max(-60, Math.min(-20, threshold));
+
+          console.log('Noise Gate calibrated:', finalThreshold, 'dB (noise floor:', avgNoise.toFixed(1), 'dB)');
+          resolve(finalThreshold);
+        }
+      };
+
+      collectSamples();
+    });
+  }
+
+  /**
+   * Установить задержку (для синхронизации с Bluetooth)
+   * ВНИМАНИЕ: По умолчанию должно быть 0 для минимальной задержки
+   */
+  setDelay(ms) {
+    const oldDelay = this.delayTime;
+    this.delayTime = ms;
+
+    if (this.delayNode) {
+      this.delayNode.delayTime.setValueAtTime(ms / 1000, this.audioContext.currentTime);
+    }
+
+    // Если delay изменился с 0 на >0 или наоборот, перестраиваем цепочку
+    const needsRebuild = (oldDelay === 0 && ms > 0) || (oldDelay > 0 && ms === 0);
+    if (needsRebuild && this.mediaStream) {
+      console.log('Rebuilding audio chain for delay change');
+      this.setupAudioChain();
+    }
+
+    console.log('Delay set to:', ms, 'ms', needsRebuild ? '(chain rebuilt)' : '');
+  }
+
+  /**
+   * Выбрать позицию (физический тип) микрофона телефона
+   *
+   * Как это работает:
+   *  Браузер не может напрямую указать «возьми нижний mic».
+   *  Но ОС реагирует на profile: когда echoCancellation=false → первичный (нижний) mic
+   *  без обработки; когда echoCancellation=true → ОС активирует speakerphone-профиль,
+   *  который на большинстве Android/iOS переключает на верхний/боковой mic.
+   *
+   * @param {string} mode — 'auto' | 'bottom' | 'top'
+   * @returns {Promise<boolean>}
+   */
+  async setMicPositionMode(mode) {
+    this.micPositionMode = mode;
+    console.log('[Mic] Position mode set to:', mode);
+
+    // Перезапрашиваем mic если он уже активен
+    if (this.mediaStream) {
+      const ok = await this.requestMicrophoneAccess();
+      if (ok) {
+        this.setupAudioChain();
+        console.log('[Mic] Restarted with new position mode:', mode);
+      }
+      return ok;
+    }
+    return true;
+  }
+
+  /**
+   * Включить/выключить Anti-feedback
+   */
+  setAntiFeedbackEnabled(enabled) {
+    this.antiFeedbackEnabled = enabled;
+    // Перестраиваем цепочку
+    if (this.mediaStream) {
+      this.setupAudioChain();
+    }
+    console.log('Anti-feedback:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Noise Gate - глушит микрофон когда не поёшь
+   * Использует setInterval(5ms) вместо requestAnimationFrame (~16.7ms)
+   * для втрое более быстрой реакции на изменение уровня сигнала.
+   */
+  startNoiseGate() {
+    if (this.noiseGateAnimationId) return;
+
+    const analyser = this.audioContext.createAnalyser();
+    // fftSize 256 вместо 512 — меньше буфер, меньше задержка анализа
+    analyser.fftSize = 256;
+    this.sourceNode.connect(analyser);
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Float32Array(bufferLength);
+
+    const checkLevel = () => {
+      analyser.getFloatTimeDomainData(dataArray);
+
+      // Вычисляем RMS (громкость)
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i] * dataArray[i];
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+      const db = 20 * Math.log10(rms + 0.0001);
+
+      // Открываем/закрываем gate
+      const targetGain = db > this.noiseGateThreshold ? 1 : 0;
+
+      // Attack: 1ms — мгновенное открытие, убирает ощущение «задержки» в начале слов.
+      // Раньше 10ms давали слышимое срезание первого звука каждого слова,
+      // что воспринималось как «задержка голоса».
+      // Release: 80ms — достаточно плавно чтобы нет кликов, но не «тянет» хвост.
+      const currentTime = this.audioContext.currentTime;
+      if (targetGain > this.noiseGateGain.gain.value) {
+        // Attack — мгновенно открываем (1ms)
+        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.001);
+      } else {
+        // Release — быстро закрываем (80ms)
+        this.noiseGateGain.gain.linearRampToValueAtTime(targetGain, currentTime + 0.08);
+      }
+
+      this.noiseGateOpen = targetGain > 0.5;
+    };
+
+    // 5ms интервал вместо requestAnimationFrame (~16.7ms) — реакция в 3x быстрее
+    this.noiseGateAnimationId = setInterval(checkLevel, 5);
+    checkLevel(); // Первый вызов немедленно, не ждём 5ms
+    console.log('Noise Gate started (5ms interval), threshold:', this.noiseGateThreshold, 'dB');
+  }
+
+  stopNoiseGate() {
+    if (this.noiseGateAnimationId) {
+      clearInterval(this.noiseGateAnimationId);
+      this.noiseGateAnimationId = null;
+    }
+  }
+
+  /**
+   * Установить порог Noise Gate
+   */
+  setNoiseGateThreshold(threshold) {
+    this.noiseGateThreshold = threshold;
+    console.log('Noise Gate threshold:', threshold, 'dB');
+  }
+
+  /**
+   * Включить/выключить Noise Gate
+   */
+  setNoiseGateEnabled(enabled) {
+    this.noiseGateEnabled = enabled;
+    if (enabled && this.audioEnhancement && this.mediaStream) {
+      this.startNoiseGate();
+    } else {
+      this.stopNoiseGate();
+      if (this.noiseGateGain) {
+        this.noiseGateGain.gain.value = 1;
+      }
+    }
+    console.log('Noise Gate:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Включить/выключить De-esser
+   */
+  setDeEsserEnabled(enabled) {
+    this.deEsserEnabled = enabled;
+    if (this.deEsserFilter) {
+      this.deEsserFilter.gain.value = enabled ? -6 : 0;
+    }
+    console.log('De-esser:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Включить/выключить Presence
+   */
+  setPresenceEnabled(enabled) {
+    this.presenceEnabled = enabled;
+    if (this.presenceFilter) {
+      this.presenceFilter.gain.value = enabled ? 3 : 0;
+    }
+    console.log('Presence:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Включить/выключить Warmth
+   */
+  setWarmthEnabled(enabled) {
+    this.warmthEnabled = enabled;
+    if (this.warmthFilter) {
+      this.warmthFilter.gain.value = enabled ? 4 : 0;
+    }
+    console.log('Warmth:', enabled ? 'ON' : 'OFF');
+  }
+
+  /**
+   * Применить вокальный пресет
+   */
+  applyVocalPreset(preset) {
+    this.vocalPreset = preset;
+
+    if (!this.audioEnhancement) return;
+
+    // Сбрасываем все настройки
+    const presets = {
+      natural: {
+        highpass: 80, lowpass: 12000,
+        deesser: -4, presence: 2, warmth: 0,
+        compThreshold: -24, compRatio: 3
+      },
+      bright: {
+        highpass: 100, lowpass: 14000,
+        deesser: -3, presence: 5, warmth: -2,
+        compThreshold: -20, compRatio: 4
+      },
+      warm: {
+        highpass: 60, lowpass: 10000,
+        deesser: -6, presence: 0, warmth: 5,
+        compThreshold: -26, compRatio: 3
+      },
+      radio: {
+        highpass: 120, lowpass: 8000,
+        deesser: -8, presence: 6, warmth: 2,
+        compThreshold: -18, compRatio: 6
+      },
+      powerful: {
+        highpass: 80, lowpass: 12000,
+        deesser: -4, presence: 4, warmth: 3,
+        compThreshold: -20, compRatio: 5
+      },
+      // Пресет для пения под музыку:
+      // • highpass 120 Гц — агрессивно срезает бас-гул и дыхание в микрофон
+      // • presence +6 дБ — голос отчётливо слышен поверх фонограммы
+      // • deesser -5 дБ — сибилянты не режут уши через колонку
+      // • ratio 5 — плотная компрессия выравнивает пение на разной громкости
+      karaoke: {
+        highpass: 120, lowpass: 13000,
+        deesser: -5, presence: 6, warmth: 1,
+        compThreshold: -20, compRatio: 5
+      }
+    };
+
+    const p = presets[preset] || presets.natural;
+
+    if (this.highpassFilter) this.highpassFilter.frequency.value = p.highpass;
+    if (this.lowpassFilter) this.lowpassFilter.frequency.value = p.lowpass;
+    if (this.deEsserFilter) this.deEsserFilter.gain.value = this.deEsserEnabled ? p.deesser : 0;
+    if (this.presenceFilter) this.presenceFilter.gain.value = this.presenceEnabled ? p.presence : 0;
+    if (this.warmthFilter) this.warmthFilter.gain.value = this.warmthEnabled ? p.warmth : 0;
+    if (this.compressor) {
+      this.compressor.threshold.value = p.compThreshold;
+      this.compressor.ratio.value = p.compRatio;
+    }
+
+    console.log('Vocal preset applied:', preset);
+  }
+
+  /**
+   * Включить/выключить улучшение звука
+   */
+  setAudioEnhancement(enabled) {
+    this.audioEnhancement = enabled;
+    console.log('Audio enhancement:', enabled ? 'ON' : 'OFF');
+    // Перестраиваем цепочку
+    if (this.mediaStream) {
+      this.setupAudioChain();
+    }
+  }
+
+  /**
+   * Включить/выключить мониторинг
+   * ВНИМАНИЕ: С колонками может вызвать feedback — используйте наушники!
+   *
+   * Мониторинг подключается к monitorInsertNode — точке ПОСЛЕ anti-feedback
+   * notch-фильтров, но ДО компрессора. Это даёт:
+   * - Защиту от свиста (notch-фильтры уже обработали сигнал)
+   * - Минимальную задержку (нет компрессора lookahead ~12ms на пути)
+   */
+  enableMonitoring(enabled) {
+    if (!this.audioContext) return;
+
+    this.isMonitoringEnabled = enabled;
+
+    // Используем monitorInsertNode (до компрессоров) для минимальной задержки.
+    // Если цепочка ещё не построена, используем sourceNode как fallback.
+    const monitorSource = this.monitorInsertNode || this.sourceNode;
+    if (!monitorSource) return;
+
+    if (enabled) {
+      // Создаём gain для мониторинга с пониженной громкостью
+      if (!this.monitorGainNode) {
+        this.monitorGainNode = this.audioContext.createGain();
+      }
+      // Громкость мониторинга масштабируется текущим значением слайдера (this.volume).
+      // volume=0.5(дефолт)→0.15; 1.0→0.30; 2.0→0.60. Макс 0.60 — безопасный feedback-потолок.
+      this.monitorGainNode.gain.value = Math.min(0.6, this.volume * 0.3);
+
+      monitorSource.connect(this.monitorGainNode);
+      this.monitorGainNode.connect(this.audioContext.destination);
+      console.log('⚠️ Monitoring enabled (zero-latency path) - используйте наушники!');
+    } else {
+      try {
+        if (this.monitorGainNode) {
+          monitorSource.disconnect(this.monitorGainNode);
+          this.monitorGainNode.disconnect(this.audioContext.destination);
+        }
+      } catch (e) {
+        // Может быть не подключен
+      }
+      console.log('Monitoring disabled');
+    }
+  }
+
+  /**
+   * Применить аудио эффект
+   */
+  applyEffect(effectName) {
+    if (!this.audioContext || !this.gainNode || !this.analyserNode) return;
+
+    // Отключаем старые эффекты
+    this.effectNodes.forEach(node => {
+      try { node.disconnect(); } catch (e) {}
+    });
+    this.effectNodes = [];
+
+    // Отключаем gainNode от analyser для перестройки цепочки
+    try { this.gainNode.disconnect(); } catch (e) {}
+
+    this.currentEffect = effectName;
+    let lastNode = this.gainNode;
+
+    switch (effectName) {
+      case 'reverb':
+        lastNode = this.createReverbEffect(lastNode);
+        break;
+
+      case 'echo':
+        lastNode = this.createEchoEffect(lastNode);
+        break;
+
+      case 'telephone':
+        lastNode = this.createTelephoneEffect(lastNode);
+        break;
+
+      case 'deep':
+        lastNode = this.createDeepEffect(lastNode);
+        break;
+
+      case 'high':
+        lastNode = this.createHighEffect(lastNode);
+        break;
+
+      case 'robot':
+        lastNode = this.createRobotEffect(lastNode);
+        break;
+
+      default:
+        // Без эффекта
+        break;
+    }
+
+    // Подключаем к анализатору
+    lastNode.connect(this.analyserNode);
+
+    // Мониторинг управляется только через enableMonitoring() — не дублируем здесь
+
+    console.log(`Effect applied: ${effectName}`);
+  }
+
+  /**
+   * Эффект реверберации — концертный зал
+   *
+   * Реалистичный импульсный отклик:
+   *  • Pre-delay 28 мс — время до первых отражений от стен зала
+   *  • RT60 = 1.6 с — время затухания до -60 dB (концертный зал среднего размера)
+   *  • HF rolloff — воздух поглощает высокие частоты быстрее низких, отчего
+   *    хвост реверба становится тёплым, а не «металлическим»
+   *  • Stereo decorrelation — L/R немного различаются → пространственность
+   */
+  createReverbEffect(inputNode) {
+    const convolver = this.audioContext.createConvolver();
+    const wetGain = this.audioContext.createGain();
+    const dryGain = this.audioContext.createGain();
+    const output = this.audioContext.createGain();
+
+    const sampleRate = this.audioContext.sampleRate;
+    const preDelayMs  = 28;    // мс до первого отражения
+    const rt60        = 1.6;   // время затухания в секундах
+    const preDelaySamples = Math.floor(sampleRate * preDelayMs / 1000);
+    const totalSamples    = Math.floor(sampleRate * (preDelayMs / 1000 + rt60 + 0.1));
+
+    const impulse = this.audioContext.createBuffer(2, totalSamples, sampleRate);
+
+    for (let ch = 0; ch < 2; ch++) {
+      const buf = impulse.getChannelData(ch);
+
+      for (let i = 0; i < totalSamples; i++) {
+        if (i < preDelaySamples) {
+          buf[i] = 0; // тишина во время pre-delay
+          continue;
+        }
+
+        const t = (i - preDelaySamples) / sampleRate;
+
+        // Экспоненциальный спад: gain = exp(-ln(10^6) / RT60 * t) = exp(-13.8 / RT60 * t)
+        const decay = Math.exp(-13.8 * t / rt60);
+
+        // HF rolloff: высокочастотная составляющая затухает в 4× быстрее
+        // Это придаёт тёплый «деревянный» характер вместо металлического хвоста
+        const hfDecay = Math.exp(-13.8 * t / (rt60 * 0.25));
+
+        // Стерео-декорреляция: L немного сдвинут относительно R → пространственность
+        const decorr = (ch === 0) ? 1.0 : (i % 7 < 3 ? 1.05 : 0.95);
+
+        buf[i] = (Math.random() * 2 - 1) * decorr * decay * (0.55 + 0.45 * hfDecay);
+      }
+    }
+
+    convolver.buffer = impulse;
+
+    // dry 0.65 + wet 0.45 = naturalный баланс «концертного зала»
+    // (не подавляет сухой сигнал, но зал слышен)
+    dryGain.gain.value = 0.65;
+    wetGain.gain.value = 0.45;
+
+    inputNode.connect(dryGain);
+    inputNode.connect(convolver);
+    convolver.connect(wetGain);
+    dryGain.connect(output);
+    wetGain.connect(output);
+
+    this.effectNodes.push(convolver, wetGain, dryGain, output);
+    return output;
+  }
+
+  /**
+   * Эффект эхо
+   */
+  createEchoEffect(inputNode) {
+    const delay = this.audioContext.createDelay(1.0);
+    const feedback = this.audioContext.createGain();
+    const wetGain = this.audioContext.createGain();
+    const output = this.audioContext.createGain();
+
+    delay.delayTime.value = 0.3;
+    feedback.gain.value = 0.4;
+    wetGain.gain.value = 0.5;
+
+    inputNode.connect(output);
+    inputNode.connect(delay);
+    delay.connect(feedback);
+    feedback.connect(delay);
+    delay.connect(wetGain);
+    wetGain.connect(output);
+
+    this.effectNodes.push(delay, feedback, wetGain, output);
+    return output;
+  }
+
+  /**
+   * Эффект телефона (узкая полоса частот)
+   */
+  createTelephoneEffect(inputNode) {
+    const highpass = this.audioContext.createBiquadFilter();
+    const lowpass = this.audioContext.createBiquadFilter();
+    const distortion = this.audioContext.createWaveShaper();
+
+    highpass.type = 'highpass';
+    highpass.frequency.value = 500;
+
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 3000;
+
+    // Небольшое искажение
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const x = (i - 128) / 128;
+      curve[i] = Math.tanh(x * 2);
+    }
+    distortion.curve = curve;
+
+    inputNode.connect(highpass);
+    highpass.connect(lowpass);
+    lowpass.connect(distortion);
+
+    this.effectNodes.push(highpass, lowpass, distortion);
+    return distortion;
+  }
+
+  /**
+   * Эффект глубокого баса
+   */
+  createDeepEffect(inputNode) {
+    const lowShelf = this.audioContext.createBiquadFilter();
+    const highShelf = this.audioContext.createBiquadFilter();
+
+    lowShelf.type = 'lowshelf';
+    lowShelf.frequency.value = 300;
+    lowShelf.gain.value = 8;
+
+    highShelf.type = 'highshelf';
+    highShelf.frequency.value = 3000;
+    highShelf.gain.value = -4;
+
+    inputNode.connect(lowShelf);
+    lowShelf.connect(highShelf);
+
+    this.effectNodes.push(lowShelf, highShelf);
+    return highShelf;
+  }
+
+  /**
+   * Эффект высокого голоса
+   */
+  createHighEffect(inputNode) {
+    const lowShelf = this.audioContext.createBiquadFilter();
+    const highShelf = this.audioContext.createBiquadFilter();
+
+    lowShelf.type = 'lowshelf';
+    lowShelf.frequency.value = 300;
+    lowShelf.gain.value = -6;
+
+    highShelf.type = 'highshelf';
+    highShelf.frequency.value = 2000;
+    highShelf.gain.value = 6;
+
+    inputNode.connect(lowShelf);
+    lowShelf.connect(highShelf);
+
+    this.effectNodes.push(lowShelf, highShelf);
+    return highShelf;
+  }
+
+  /**
+   * Эффект робота
+   */
+  createRobotEffect(inputNode) {
+    const oscillator = this.audioContext.createOscillator();
+    const oscillatorGain = this.audioContext.createGain();
+    const ringModulator = this.audioContext.createGain();
+
+    oscillator.frequency.value = 50;
+    oscillator.type = 'sawtooth';
+    oscillatorGain.gain.value = 0.5;
+
+    oscillator.connect(oscillatorGain);
+    oscillatorGain.connect(ringModulator.gain);
+    oscillator.start();
+
+    inputNode.connect(ringModulator);
+
+    this.effectNodes.push(oscillator, oscillatorGain, ringModulator);
+    return ringModulator;
+  }
+
+  /**
+   * Установить громкость микрофона
+   */
+  setVolume(value) {
+    this.volume = value;
+    if (this.gainNode) {
+      this.gainNode.gain.value = value;
+    }
+    // Обновляем громкость мониторинга — слайдер должен влиять на то что слышит певец.
+    // Формула: value=0.5(дефолт)→0.15, value=1.0→0.30, value=2.0→0.60(макс, feedback-safe)
+    if (this.monitorGainNode) {
+      this.monitorGainNode.gain.value = Math.min(0.6, value * 0.3);
+    }
+  }
+
+  /**
+   * Получить данные для визуализации
+   */
+  getVisualizerData() {
+    if (!this.analyserNode) return null;
+
+    const bufferLength = this.analyserNode.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    this.analyserNode.getByteFrequencyData(dataArray);
+
+    return dataArray;
+  }
+
+  /**
+   * Получить уровень громкости
+   */
+  getVolumeLevel() {
+    if (!this.analyserNode) return 0;
+
+    const dataArray = new Uint8Array(this.analyserNode.frequencyBinCount);
+    this.analyserNode.getByteTimeDomainData(dataArray);
+
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const value = (dataArray[i] - 128) / 128;
+      sum += value * value;
+    }
+
+    return Math.sqrt(sum / dataArray.length);
+  }
+
+  /**
+   * Сменить микрофон
+   */
+  async switchMicrophone(deviceId) {
+    if (!deviceId) return false;
+
+    try {
+      // Останавливаем текущий поток
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach(track => track.stop());
+      }
+
+      // Получаем новый поток
+      const success = await this.requestMicrophoneAccess(deviceId);
+      if (success) {
+        this.setupAudioChain();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Failed to switch microphone:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Сменить динамик (если поддерживается)
+   */
+  async switchSpeaker(deviceId) {
+    if (!deviceId) return false;
+
+    try {
+      // Используем setSinkId если поддерживается
+      const audioElements = document.querySelectorAll('audio, video');
+      for (const element of audioElements) {
+        if (element.setSinkId) {
+          await element.setSinkId(deviceId);
+        }
+      }
+      console.log('Speaker switched to:', deviceId);
+      return true;
+    } catch (error) {
+      console.error('Failed to switch speaker:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Включить/выключить микрофон
+   */
+  setMicEnabled(enabled) {
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach(track => {
+        track.enabled = enabled;
+      });
+      this.isMicEnabled = enabled;
+      console.log('Microphone', enabled ? 'enabled' : 'disabled');
+    }
+  }
+
+  /**
+   * Отключить все узлы
+   */
+  disconnectAll() {
+    // Останавливаем все фоновые циклы
+    this.stopLevelMeter();
+    this.stopNoiseGate(); // 5ms setInterval — иначе продолжает крутиться после разбора цепочки
+
+    const nodes = [
+      this.sourceNode,
+      this.monitorInsertNode,
+      this.gainNode,
+      this.analyserNode,
+      this.highpassFilter,
+      this.lowpassFilter,
+      this.compressor,
+      this.limiter,
+      this.deEsserFilter,
+      this.presenceFilter,
+      this.warmthFilter,
+      this.noiseGateGain,
+      this.monitorGainNode,
+      this.delayNode,
+      ...this.antiFeedbackFilters
+    ];
+
+    nodes.forEach(node => {
+      if (node) {
+        try { node.disconnect(); } catch (e) {}
+      }
+    });
+
+    this.effectNodes.forEach(node => {
+      try { node.disconnect(); } catch (e) {}
+    });
+
+    this.antiFeedbackFilters = [];
+
+    // WebRTC destination — зануляем, пересоздаётся в setupAudioChain()
+    if (this._webrtcDest) {
+      try { this._webrtcDest.disconnect(); } catch(e) {}
+      this._webrtcDest = null;
+    }
+  }
+
+  /**
+   * Получить поток для WebRTC
+   *
+   * На Android/Desktop возвращаем обработанный поток из _webrtcDest:
+   *   друзья слышат голос с EQ, компрессором, noise gate и выбранным эффектом.
+   * На iOS Safari возвращаем оригинальный поток:
+   *   createMediaStreamDestination() нестабилен в WebRTC-соединениях на iOS.
+   */
+  getOutputStream() {
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+    if (this._webrtcDest && !isIOS) {
+      console.log('Returning processed stream for WebRTC (EQ + compressor + effects)');
+      return this._webrtcDest.stream;
+    }
+
+    if (this.mediaStream) {
+      console.log('Returning raw mediaStream for WebRTC' + (isIOS ? ' (iOS fallback)' : ''));
+      return this.mediaStream;
+    }
+
+    return null;
+  }
+
+  /**
+   * Освободить ресурсы
+   */
+  destroy() {
+    this.disconnectAll();
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => track.stop());
+    }
+
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      this.audioContext.close();
+    }
+
+    this.isInitialized = false;
+    console.log('AudioManager destroyed');
+  }
+}
+
+// Экспортируем глобально
+window.AudioManager = AudioManager;
